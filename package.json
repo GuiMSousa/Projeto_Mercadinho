@@ -14,7 +14,9 @@
     "seed:products": "node prisma/seedProducts.js",
     "simulate:sales": "node prisma/simulateSales.js",
     "reset-password": "node prisma/resetPassword.js",
-    "test": "node --test test/integration.test.js",
+    "test": "node --test test/contract.test.js test/integration.test.js",
+    "spec:check": "npx --yes @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive && npx --yes @redocly/cli@2.54.3 lint openspec/openapi.yaml && node --test test/contract.test.js",
+    "spec:docs": "npx --yes @redocly/cli@2.54.3 build-docs openspec/openapi.yaml -o openspec/openapi.html",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -31,14 +33,15 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.3.0",
     "node-cron": "^4.6.0",
-    "nodemailer": "^9.0.5",
+    "nodemailer": "^10.0.10",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "nodemon": "^3.1.4",
-    "prisma": "^5.20.0"
+    "prisma": "^5.20.0",
+    "yaml": "^2.9.1"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

@@ -1,8 +1,8 @@
 const express = require('express');
 const prisma = require('../db');
-const { authenticate, authorize } = require('../auth');
-const { getStockForecast, getSlowMovingProducts } = require('../forecast');
-const { parseDateParam, clampIntParam } = require('../queryHelpers');
+const { authenticate, authorize } = require('../middleware/auth');
+const { getStockForecast, getSlowMovingProducts } = require('../services/forecast');
+const { parseDateParam, clampIntParam } = require('../lib/queryHelpers');
 
 const router = express.Router();
 router.use(authenticate, authorize('ADMIN'));

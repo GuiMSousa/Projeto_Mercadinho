@@ -1,5 +1,9 @@
-const prisma = require('./db');
-const config = require('./config');
+const prisma = require('../db');
+const config = require('../config');
+
+// Cancelar uma venda devolve o estoque com um ADJUSTMENT, mas a movimentação
+// SALE original continua no extrato — sem o filtro, ela contaria como demanda.
+const soldSince = (since) => ({ type: 'SALE', createdAt: { gte: since }, sale: { canceled: false } });
 
 // Previsão simples: consumo médio diário nos últimos N dias (baseado em
 // movimentações de venda) projetado sobre o estoque atual.
@@ -11,7 +15,7 @@ async function getStockForecast() {
     prisma.product.findMany({ where: { active: true }, orderBy: { name: 'asc' } }),
     prisma.stockMovement.groupBy({
       by: ['productId'],
-      where: { type: 'SALE', createdAt: { gte: since } },
+      where: soldSince(since),
       _sum: { quantity: true },
     }),
   ]);
@@ -70,7 +74,7 @@ async function getSlowMovingProducts(days) {
       where: { active: true, currentStock: { gt: 0 } },
       select: { id: true, name: true, currentStock: true, costPrice: true },
     }),
-    prisma.stockMovement.groupBy({ by: ['productId'], where: { type: 'SALE', createdAt: { gte: since } }, _sum: { quantity: true } }),
+    prisma.stockMovement.groupBy({ by: ['productId'], where: soldSince(since), _sum: { quantity: true } }),
   ]);
 
   const soldRecently = new Set(recentSales.map((r) => r.productId));

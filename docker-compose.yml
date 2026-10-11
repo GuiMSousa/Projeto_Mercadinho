@@ -60,6 +60,8 @@ services:
       LOW_STOCK_ALERT_HOUR: ${LOW_STOCK_ALERT_HOUR:-8}
       EXPIRY_ALERT_DAYS: ${EXPIRY_ALERT_DAYS:-7}
       FORECAST_WINDOW_DAYS: ${FORECAST_WINDOW_DAYS:-30}
+      # Fuso da loja (semáforo de validade, início do dia no painel, hora do alerta).
+      TZ: ${TZ:-America/Sao_Paulo}
       # Só usados pelo "docker compose exec app npm run seed" (não pelo
       # servidor em si) — defina no seu .env se quiser outro e-mail/senha.
       ADMIN_NAME: ${ADMIN_NAME:-Dono do Mercado}

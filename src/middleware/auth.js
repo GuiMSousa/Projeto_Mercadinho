@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const config = require('./config');
-const prisma = require('./db');
+const config = require('../config');
+const prisma = require('../db');
 
 const COOKIE_NAME = 'cv_token';
 const COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000; // 8 horas

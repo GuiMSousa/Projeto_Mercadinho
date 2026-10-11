@@ -25,9 +25,12 @@ function assertSafeToReset() {
 // para um banco com dados reais ao rodar a suíte.
 async function resetDb() {
   assertSafeToReset();
+  await prisma.stockMovementBatch.deleteMany();
   await prisma.stockMovement.deleteMany();
   await prisma.saleItem.deleteMany();
   await prisma.sale.deleteMany();
+  await prisma.cashSession.deleteMany();
+  await prisma.stockBatch.deleteMany();
   await prisma.product.deleteMany();
   await prisma.user.deleteMany();
 }

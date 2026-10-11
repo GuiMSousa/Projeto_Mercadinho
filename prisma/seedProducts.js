@@ -1,16 +1,16 @@
 require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
+const { today } = require('../src/lib/calendar');
+const { moveStock } = require('../src/services/stockOps');
 
 const prisma = new PrismaClient();
 
 // Datas relativas a hoje, para o exemplo já nascer com alguns produtos
 // "vencendo em breve" e outros com validade tranquila — assim o painel de
 // alertas mostra dados reais assim que o sistema é aberto pela primeira vez.
+// No mesmo formato das validades gravadas pela API (meia-noite UTC da data).
 function daysFromNow(days) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + days);
-  return d;
+  return new Date(today().getTime() + days * 86_400_000);
 }
 
 // Catálogo de exemplo para um mercadinho de secos e molhados. Ajuste
@@ -67,7 +67,7 @@ async function main() {
           costPrice: p.costPrice.toFixed(2),
           salePrice: p.salePrice.toFixed(2),
           minStock: p.minStock.toFixed(3),
-          expiryDate,
+          // Validade não entra aqui: ela vem dos lotes do produto.
           active: true,
         },
       });
@@ -85,21 +85,16 @@ async function main() {
           costPrice: p.costPrice.toFixed(2),
           salePrice: p.salePrice.toFixed(2),
           minStock: p.minStock.toFixed(3),
-          currentStock: p.initialStock.toFixed(3),
-          expiryDate,
         },
       });
       if (p.initialStock > 0) {
-        await tx.stockMovement.create({
-          data: {
-            productId: product.id,
-            type: 'ENTRY',
-            quantity: p.initialStock.toFixed(3),
-            previousStock: '0',
-            newStock: p.initialStock.toFixed(3),
-            reason: 'Estoque inicial (carga de exemplo)',
-            userId: admin.id,
-          },
+        await moveStock(tx, {
+          productId: product.id,
+          quantity: p.initialStock,
+          type: 'ENTRY',
+          reason: 'Estoque inicial (carga de exemplo)',
+          userId: admin.id,
+          expiryDate,
         });
       }
     });

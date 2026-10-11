@@ -1,27 +1,17 @@
 const express = require('express');
 const { z } = require('zod');
 const prisma = require('../db');
-const validate = require('../validate');
-const httpError = require('../httpError');
-const { authenticate, authorize } = require('../auth');
-const { clampIntParam } = require('../queryHelpers');
+const validate = require('../middleware/validate');
+const httpError = require('../lib/httpError');
+const { authenticate, authorize } = require('../middleware/auth');
+const { clampIntParam, parseEnumParam } = require('../lib/queryHelpers');
+const { dateOnly, toStoredDate, today } = require('../lib/calendar');
+const { moveStock, lockProduct, expiryChange, openBatchExpiries, setOpenBatchesExpiry } = require('../services/stockOps');
+const { URGENCY_LEVELS, productUrgency } = require('../services/urgency');
 
 const router = express.Router();
 router.use(authenticate);
 
-// O regex garante o formato; o refine garante que a data existe de fato no
-// calendário. Não basta checar se `Date.parse` retorna um valor válido: o
-// parser de datas do JavaScript "conserta" silenciosamente dias fora do mês
-// (ex: "2026-02-30" vira 2 de março) em vez de rejeitar — então validamos
-// comparando os componentes de volta após a conversão (round-trip).
-const dateOnly = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida (use AAAA-MM-DD).')
-  .refine((v) => {
-    const [year, month, day] = v.split('-').map(Number);
-    const date = new Date(Date.UTC(year, month - 1, day));
-    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-  }, 'Essa data não existe no calendário.');
 const money = z.number().finite().nonnegative().max(1_000_000);
 
 const productCreateSchema = z.object({
@@ -42,7 +32,9 @@ const productCreateSchema = z.object({
 // tela — a não ser mexendo direto no banco de dados.
 const productUpdateSchema = productCreateSchema.partial().omit({ initialStock: true }).extend({ active: z.boolean().optional() });
 
-function serializeProduct(p, role) {
+// `expiryDate` é a validade mais próxima entre os lotes com saldo; o semáforo
+// (urgency) sai dela e do saldo × mínimo.
+function serializeProduct(p, role, now = today()) {
   const base = {
     id: p.id,
     name: p.name,
@@ -54,6 +46,7 @@ function serializeProduct(p, role) {
     minStock: Number(p.minStock),
     expiryDate: p.expiryDate,
     active: p.active,
+    ...productUrgency(p, now),
   };
   if (role === 'ADMIN') {
     base.costPrice = Number(p.costPrice);
@@ -64,6 +57,7 @@ function serializeProduct(p, role) {
 
 router.get('/', async (req, res) => {
   const { query, category, lowStock, includeInactive } = req.query;
+  const urgency = parseEnumParam(req.query.urgency, URGENCY_LEVELS, 'urgency');
   const where = {};
   if (!(includeInactive === 'true' && req.user.role === 'ADMIN')) where.active = true;
   if (query) where.name = { contains: String(query), mode: 'insensitive' };
@@ -73,12 +67,15 @@ router.get('/', async (req, res) => {
   const page = clampIntParam(req.query.page, { min: 1, max: 1_000_000, fallback: 1 });
   const pageSize = clampIntParam(req.query.pageSize, { min: 1, max: 100, fallback: 20 });
 
-  // Prisma não compara coluna com coluna (estoque <= mínimo) no where.
-  // Com lowStock, filtra em memória e pagina o resultado; sem ele, skip/take no banco.
-  if (!paginated || lowStock === 'true') {
+  // Prisma não compara coluna com coluna (estoque <= mínimo) no where, e o
+  // semáforo é calculado na leitura. Com esses filtros, filtra em memória e
+  // pagina o resultado; sem eles, skip/take no banco.
+  if (!paginated || lowStock === 'true' || urgency) {
     const products = await prisma.product.findMany({ where, orderBy: { name: 'asc' } });
-    let result = products.map((p) => serializeProduct(p, req.user.role));
+    const now = today();
+    let result = products.map((p) => serializeProduct(p, req.user.role, now));
     if (lowStock === 'true') result = result.filter((p) => p.currentStock <= p.minStock);
+    if (urgency) result = result.filter((p) => p.urgency === urgency);
     if (!paginated) return res.json(result);
     const totalCount = result.length;
     const pageItems = result.slice((page - 1) * pageSize, page * pageSize);
@@ -127,26 +124,20 @@ router.post('/', authorize('ADMIN'), validate(productCreateSchema), async (req, 
           costPrice: data.costPrice.toFixed(2),
           salePrice: data.salePrice.toFixed(2),
           minStock: data.minStock.toFixed(3),
-          currentStock: data.initialStock.toFixed(3),
-          expiryDate: data.expiryDate ? new Date(`${data.expiryDate}T00:00:00Z`) : null,
         },
       });
+      if (data.initialStock <= 0) return created; // sem lote não há validade a guardar
 
-      if (data.initialStock > 0) {
-        await tx.stockMovement.create({
-          data: {
-            productId: created.id,
-            type: 'ENTRY',
-            quantity: data.initialStock.toFixed(3),
-            previousStock: '0',
-            newStock: data.initialStock.toFixed(3),
-            reason: 'Estoque inicial no cadastro',
-            userId: req.user.sub,
-          },
-        });
-      }
-
-      return created;
+      // Estoque inicial = primeiro lote, com a validade informada.
+      await moveStock(tx, {
+        productId: created.id,
+        quantity: data.initialStock,
+        type: 'ENTRY',
+        reason: 'Estoque inicial no cadastro',
+        userId: req.user.sub,
+        expiryDate: toStoredDate(data.expiryDate),
+      });
+      return tx.product.findUnique({ where: { id: created.id } });
     });
   } catch (err) {
     // P2002 = violação de restrição única (ex: duas requisições simultâneas com o mesmo código de barras)
@@ -169,21 +160,32 @@ router.put('/:id', authorize('ADMIN'), validate(productUpdateSchema), async (req
 
   let product;
   try {
-    product = await prisma.product.update({
-      where: { id: req.params.id },
-      data: {
-        ...(data.name !== undefined && { name: data.name }),
-        ...(data.barcode !== undefined && { barcode: data.barcode || null }),
-        ...(data.category !== undefined && { category: data.category || null }),
-        ...(data.unit !== undefined && { unit: data.unit }),
-        ...(data.costPrice !== undefined && { costPrice: data.costPrice.toFixed(2) }),
-        ...(data.salePrice !== undefined && { salePrice: data.salePrice.toFixed(2) }),
-        ...(data.minStock !== undefined && { minStock: data.minStock.toFixed(3) }),
-        ...(data.expiryDate !== undefined && {
-          expiryDate: data.expiryDate ? new Date(`${data.expiryDate}T00:00:00Z`) : null,
-        }),
-        ...(data.active !== undefined && { active: data.active }),
-      },
+    product = await prisma.$transaction(async (tx) => {
+      const updated = await tx.product.update({
+        where: { id: req.params.id },
+        data: {
+          ...(data.name !== undefined && { name: data.name }),
+          ...(data.barcode !== undefined && { barcode: data.barcode || null }),
+          ...(data.category !== undefined && { category: data.category || null }),
+          ...(data.unit !== undefined && { unit: data.unit }),
+          ...(data.costPrice !== undefined && { costPrice: data.costPrice.toFixed(2) }),
+          ...(data.salePrice !== undefined && { salePrice: data.salePrice.toFixed(2) }),
+          ...(data.minStock !== undefined && { minStock: data.minStock.toFixed(3) }),
+          ...(data.active !== undefined && { active: data.active }),
+        },
+      });
+      if (data.expiryDate === undefined) return updated;
+
+      // A validade do produto é a dos lotes: só muda pelo produto quando não há
+      // ambiguidade (ver expiryChange); com o produto travado, nenhum lote muda no meio.
+      const { expiryDate: current } = await lockProduct(tx, updated.id);
+      const requested = toStoredDate(data.expiryDate);
+      const change = expiryChange(current, await openBatchExpiries(tx, updated.id), requested);
+      if (change === 'no-stock') throw httpError(400, 'Produto sem estoque: a validade é registrada a cada entrada de mercadoria.');
+      if (change === 'mixed') throw httpError(409, 'Os lotes deste produto vencem em datas diferentes: corrija a validade lote a lote.');
+      if (change === 'unchanged') return updated;
+      await setOpenBatchesExpiry(tx, updated.id, requested);
+      return tx.product.findUnique({ where: { id: updated.id } });
     });
   } catch (err) {
     if (err.code === 'P2002') throw httpError(409, 'Já existe um produto com este código de barras.');

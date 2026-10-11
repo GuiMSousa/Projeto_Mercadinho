@@ -1,0 +1,51 @@
+schema: spec-driven
+
+context: |
+  Language: pt-BR
+  All artifacts must be written in pt-BR.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Projeto: Contro Vend — sistema web de vendas (PDV) e estoque para um mercadinho
+  de secos e molhados. Perfis: ADMIN (o dono, único) e CASHIER (funcionário).
+
+  Stack: Node.js >= 20, Express 4, Prisma 5 + PostgreSQL 16, Zod (validação),
+  JWT HS256 em cookie httpOnly, node:test (testes de integração contra banco real).
+  Frontend: HTML/CSS/JS puro em public/, sem build, servido pelo próprio Express.
+
+  Arquitetura (src/):
+  - app.js: middlewares globais (helmet, cors, rate limit, CSRF) e montagem das rotas
+  - server.js: ponto de entrada (HTTP + agendamento do alerta diário)
+  - config.js (variáveis de ambiente) e db.js (cliente Prisma único)
+  - middleware/: auth.js (sessão, papéis, CSRF) e validate.js (Zod)
+  - lib/: httpError.js e queryHelpers.js (validação de query string)
+  - services/: regras de negócio (forecast, stockOps, productImport, spreadsheet)
+  - routes/: um roteador por capacidade; jobs/: tarefas agendadas
+
+  Capacidade OpenSpec -> código:
+  api-platform -> app.js, server.js, config.js | auth -> routes/auth.js, middleware/auth.js
+  users -> routes/users.js | products -> routes/products.js
+  stock -> routes/stock.js, services/stockOps.js | sales -> routes/sales.js
+  dashboard -> routes/dashboard.js | reports -> routes/reports.js, services/forecast.js
+  product-import -> routes/imports.js, services/productImport.js, services/spreadsheet.js
+  daily-alerts -> jobs/dailyAlerts.js
+
+  Contrato HTTP: openspec/openapi.yaml (OpenAPI 3.1) descreve todos os endpoints e
+  schemas. test/contract.test.js falha se as rotas do Express e o openapi.yaml divergirem.
+
+  Convenções: mensagens de erro e textos de interface em pt-BR; dinheiro em
+  Decimal(12,2) e quantidades em Decimal(12,3), serializados como number; toda
+  alteração de estoque passa por UPDATE atômico e gera uma StockMovement; exclusão
+  sempre lógica (campo active); autorização sempre checada no servidor; o frontend
+  nunca usa innerHTML com dado do servidor; comentários explicam o porquê.
+
+  Comandos: npm run dev | npm test (usa TEST_DATABASE_URL) | npm run spec:check
+
+rules:
+  proposal:
+    - Em Impact, diga se a mudança altera o contrato HTTP (openspec/openapi.yaml) e/ou o schema do banco (nova migration Prisma).
+  specs:
+    - Descreva comportamento observável; detalhes de payload ficam no openapi.yaml. Referencie a operação (ex. POST /api/sales) em vez de copiar o schema.
+  tasks:
+    - Quando a API mudar, inclua uma tarefa para atualizar openspec/openapi.yaml.
+    - Quando o modelo de dados mudar, inclua uma tarefa para criar a migration com npm run prisma:migrate.
+    - Termine sempre com tarefas para cobrir o comportamento em test/integration.test.js e rodar npm test e npm run spec:check.

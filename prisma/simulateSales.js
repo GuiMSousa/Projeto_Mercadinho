@@ -10,6 +10,7 @@
 require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
+const { moveStock } = require('../src/services/stockOps');
 
 const prisma = new PrismaClient();
 
@@ -77,7 +78,6 @@ async function main() {
 
       const unitPrice = Number(product.salePrice);
       const subtotal = unitPrice * qty;
-      const previousStock = stock;
       stock -= qty;
 
       await prisma.$transaction(async (tx) => {
@@ -93,20 +93,18 @@ async function main() {
             subtotal: subtotal.toFixed(2),
           },
         });
-        await tx.stockMovement.create({
-          data: {
-            productId: product.id,
-            type: 'SALE',
-            quantity: (-qty).toFixed(3),
-            previousStock: previousStock.toFixed(3),
-            newStock: stock.toFixed(3),
-            reason: 'Venda (simulação de histórico)',
-            userId: seller.id,
-            saleId: sale.id,
-            createdAt,
-          },
+        // Baixa pelos lotes (PVPS de venda), igual a uma venda feita pela tela; só a
+        // data da movimentação é recuada para o dia simulado.
+        const { movement } = await moveStock(tx, {
+          productId: product.id,
+          quantity: -qty,
+          type: 'SALE',
+          reason: 'Venda (simulação de histórico)',
+          userId: seller.id,
+          saleId: sale.id,
+          order: 'SALE',
         });
-        await tx.product.update({ where: { id: product.id }, data: { currentStock: stock.toFixed(3) } });
+        await tx.stockMovement.update({ where: { id: movement.id }, data: { createdAt } });
       });
 
       salesCreated++;

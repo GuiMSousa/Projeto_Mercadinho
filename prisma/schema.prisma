@@ -19,31 +19,40 @@ enum MovementType {
   LOSS
 }
 
+enum PaymentMethod {
+  CASH
+  PIX
+  DEBIT_CARD
+  CREDIT_CARD
+}
+
 model User {
-  id           String          @id @default(uuid())
-  name         String
-  email        String          @unique
-  passwordHash String
-  role         Role            @default(CASHIER)
-  active       Boolean         @default(true)
+  id                  String               @id @default(uuid())
+  name                String
+  email               String               @unique
+  passwordHash        String
+  role                Role                 @default(CASHIER)
+  active              Boolean              @default(true)
   // Incrementado a cada troca de senha (ou desativação). Incluído no JWT; o
   // middleware de auth compara com o valor do banco — divergência invalida a
   // sessão. É como derrubamos cookies JWT já emitidos depois de um reset.
-  sessionVersion Int           @default(0)
-  createdAt    DateTime        @default(now())
-  sales        Sale[]
-  movements    StockMovement[]
+  sessionVersion      Int                  @default(0)
+  createdAt           DateTime             @default(now())
+  sales               Sale[]
+  movements           StockMovement[]
   passwordResetTokens PasswordResetToken[]
+  cashSessionsOpened  CashSession[]        @relation("CashSessionOpenedBy")
+  cashSessionsClosed  CashSession[]        @relation("CashSessionClosedBy")
 }
 
 model PasswordResetToken {
-  id        String   @id @default(uuid())
-  tokenHash String   @unique
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId])
   @@index([expiresAt])
@@ -59,29 +68,85 @@ model Product {
   salePrice    Decimal         @db.Decimal(12, 2)
   currentStock Decimal         @default(0) @db.Decimal(12, 3)
   minStock     Decimal         @default(0) @db.Decimal(12, 3)
+  // Validade mais próxima entre os lotes com saldo — recalculada na mesma
+  // transação de toda operação de estoque (services/stockOps.js).
   expiryDate   DateTime?
   active       Boolean         @default(true)
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
   saleItems    SaleItem[]
   movements    StockMovement[]
+  batches      StockBatch[]
 
   @@index([name])
   @@index([active])
 }
 
+// Lote de mercadoria: o saldo do produto é a soma do `remaining` dos seus lotes.
+model StockBatch {
+  id          String               @id @default(uuid())
+  productId   String
+  product     Product              @relation(fields: [productId], references: [id])
+  quantity    Decimal              @db.Decimal(12, 3)
+  remaining   Decimal              @db.Decimal(12, 3)
+  expiryDate  DateTime?
+  createdAt   DateTime             @default(now())
+  allocations StockMovementBatch[]
+
+  @@index([productId])
+  @@index([expiryDate])
+}
+
+// Quanto cada movimentação alterou em cada lote (com sinal, como a movimentação).
+model StockMovementBatch {
+  id         String        @id @default(uuid())
+  movementId String
+  movement   StockMovement @relation(fields: [movementId], references: [id])
+  batchId    String
+  batch      StockBatch    @relation(fields: [batchId], references: [id])
+  quantity   Decimal       @db.Decimal(12, 3)
+
+  @@index([movementId])
+  @@index([batchId])
+}
+
+model CashSession {
+  id             String    @id @default(uuid())
+  // true enquanto aberto, null depois de fechado: o índice único aceita vários
+  // NULL, então nunca existem dois caixas abertos ao mesmo tempo.
+  isOpen         Boolean?  @unique @default(true)
+  openingAmount  Decimal   @db.Decimal(12, 2)
+  openedById     String
+  openedBy       User      @relation("CashSessionOpenedBy", fields: [openedById], references: [id])
+  openedAt       DateTime  @default(now())
+  closedById     String?
+  closedBy       User?     @relation("CashSessionClosedBy", fields: [closedById], references: [id])
+  closedAt       DateTime?
+  countedAmount  Decimal?  @db.Decimal(12, 2)
+  // Gravado no fechamento: fundo de troco + vendas em dinheiro não canceladas.
+  expectedAmount Decimal?  @db.Decimal(12, 2)
+  notes          String?
+  sales          Sale[]
+
+  @@index([openedAt])
+}
+
 model Sale {
-  id          String          @id @default(uuid())
-  sellerId    String
-  seller      User            @relation(fields: [sellerId], references: [id])
-  totalAmount Decimal         @default(0) @db.Decimal(12, 2)
-  canceled    Boolean         @default(false)
-  createdAt   DateTime        @default(now())
-  items       SaleItem[]
-  movements   StockMovement[]
+  id            String          @id @default(uuid())
+  sellerId      String
+  seller        User            @relation(fields: [sellerId], references: [id])
+  totalAmount   Decimal         @default(0) @db.Decimal(12, 2)
+  canceled      Boolean         @default(false)
+  paymentMethod PaymentMethod   @default(CASH)
+  cashSessionId String?
+  cashSession   CashSession?    @relation(fields: [cashSessionId], references: [id])
+  createdAt     DateTime        @default(now())
+  items         SaleItem[]
+  movements     StockMovement[]
 
   @@index([createdAt])
   @@index([sellerId])
+  @@index([cashSessionId])
 }
 
 model SaleItem {
@@ -99,19 +164,20 @@ model SaleItem {
 }
 
 model StockMovement {
-  id            String       @id @default(uuid())
+  id            String               @id @default(uuid())
   productId     String
-  product       Product      @relation(fields: [productId], references: [id])
+  product       Product              @relation(fields: [productId], references: [id])
   type          MovementType
-  quantity      Decimal      @db.Decimal(12, 3)
-  previousStock Decimal      @db.Decimal(12, 3)
-  newStock      Decimal      @db.Decimal(12, 3)
+  quantity      Decimal              @db.Decimal(12, 3)
+  previousStock Decimal              @db.Decimal(12, 3)
+  newStock      Decimal              @db.Decimal(12, 3)
   reason        String?
   userId        String
-  user          User         @relation(fields: [userId], references: [id])
+  user          User                 @relation(fields: [userId], references: [id])
   saleId        String?
-  sale          Sale?        @relation(fields: [saleId], references: [id])
-  createdAt     DateTime     @default(now())
+  sale          Sale?                @relation(fields: [saleId], references: [id])
+  createdAt     DateTime             @default(now())
+  batches       StockMovementBatch[]
 
   @@index([productId, createdAt])
   @@index([type, createdAt])

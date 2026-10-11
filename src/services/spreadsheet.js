@@ -3,7 +3,7 @@
 // única — { headers, rows } — para que todo o resto do fluxo de importação
 // trabalhe com um formato só, independente de onde os dados vieram.
 const ExcelJS = require('exceljs');
-const httpError = require('./httpError');
+const httpError = require('../lib/httpError');
 
 const MAX_ROWS = 1000;
 const MAX_COLUMNS = 40;

@@ -1,10 +1,13 @@
 const express = require('express');
 const { z } = require('zod');
 const prisma = require('../db');
-const validate = require('../validate');
-const { authenticate, authorize } = require('../auth');
-const { parseDateParam, parseEnumParam, clampIntParam } = require('../queryHelpers');
-const { applyStockDelta } = require('../stockOps');
+const validate = require('../middleware/validate');
+const { authenticate, authorize } = require('../middleware/auth');
+const { parseDateParam, parseEnumParam, clampIntParam } = require('../lib/queryHelpers');
+const httpError = require('../lib/httpError');
+const { dateOnly, toStoredDate, today } = require('../lib/calendar');
+const { moveStock, refreshNextExpiry, lockProduct } = require('../services/stockOps');
+const { URGENCY_LEVELS, batchUrgency } = require('../services/urgency');
 
 const router = express.Router();
 // Movimentações de estoque (entradas de compra e ajustes/perdas) são
@@ -15,61 +18,105 @@ const entrySchema = z.object({
   productId: z.string().uuid(),
   quantity: z.number().finite().positive().max(1_000_000),
   reason: z.string().trim().max(255).optional().nullable(),
+  expiryDate: dateOnly.optional().nullable(),
 });
 
-const adjustmentSchema = z.object({
-  productId: z.string().uuid(),
-  quantity: z
-    .number()
-    .finite()
-    .refine((v) => v !== 0, 'A quantidade não pode ser zero.')
-    .refine((v) => Math.abs(v) <= 1_000_000),
-  reason: z.string().trim().min(1).max(255),
-  type: z.enum(['ADJUSTMENT', 'LOSS']).default('ADJUSTMENT'),
-});
-
-router.post('/entries', validate(entrySchema), async (req, res) => {
-  const { productId, quantity, reason } = req.body;
-
-  const result = await prisma.$transaction(async (tx) => {
-    const { updated, previousStock, newStock } = await applyStockDelta(tx, productId, quantity);
-    await tx.stockMovement.create({
-      data: {
-        productId,
-        type: 'ENTRY',
-        quantity: quantity.toFixed(3),
-        previousStock,
-        newStock,
-        reason: reason || 'Entrada de estoque (compra)',
-        userId: req.user.sub,
-      },
-    });
-    return updated;
+const adjustmentSchema = z
+  .object({
+    productId: z.string().uuid(),
+    quantity: z
+      .number()
+      .finite()
+      .refine((v) => v !== 0, 'A quantidade não pode ser zero.')
+      .refine((v) => Math.abs(v) <= 1_000_000),
+    reason: z.string().trim().min(1).max(255),
+    type: z.enum(['ADJUSTMENT', 'LOSS']).default('ADJUSTMENT'),
+    batchId: z.string().uuid().optional(),
+    expiryDate: dateOnly.optional().nullable(),
+  })
+  .refine((d) => !d.expiryDate || (d.quantity > 0 && !d.batchId), {
+    message: 'A validade só vale para um lote novo: quantidade positiva sem batchId.',
+    path: ['expiryDate'],
   });
 
-  res.status(201).json({ productId: result.id, currentStock: Number(result.currentStock) });
+const batchUpdateSchema = z.object({ expiryDate: dateOnly.nullable() });
+
+function serializeBatch(b, now = today()) {
+  return {
+    id: b.id,
+    productId: b.productId,
+    product: b.product.name,
+    unit: b.product.unit,
+    quantity: Number(b.quantity),
+    remaining: Number(b.remaining),
+    expiryDate: b.expiryDate,
+    ...batchUrgency(b.expiryDate, now),
+    createdAt: b.createdAt,
+  };
+}
+
+router.post('/entries', validate(entrySchema), async (req, res) => {
+  const { productId, quantity, reason, expiryDate } = req.body;
+
+  const result = await prisma.$transaction((tx) =>
+    moveStock(tx, {
+      productId,
+      quantity,
+      type: 'ENTRY',
+      reason: reason || 'Entrada de estoque (compra)',
+      userId: req.user.sub,
+      expiryDate: toStoredDate(expiryDate),
+    }),
+  );
+
+  res.status(201).json({ productId, currentStock: Number(result.newStock), batch: serializeBatch(result.batch) });
 });
 
 router.post('/adjustments', validate(adjustmentSchema), async (req, res) => {
-  const { productId, quantity, reason, type } = req.body;
+  const { productId, quantity, reason, type, batchId, expiryDate } = req.body;
 
-  const result = await prisma.$transaction(async (tx) => {
-    const { updated, previousStock, newStock } = await applyStockDelta(tx, productId, quantity);
-    await tx.stockMovement.create({
-      data: {
-        productId,
-        type,
-        quantity: quantity.toFixed(3),
-        previousStock,
-        newStock,
-        reason,
-        userId: req.user.sub,
-      },
+  const result = await prisma.$transaction((tx) =>
+    moveStock(tx, { productId, quantity, type, reason, userId: req.user.sub, batchId, expiryDate: toStoredDate(expiryDate) }),
+  );
+
+  res.status(201).json({
+    productId,
+    currentStock: Number(result.newStock),
+    ...(result.batch && { batch: serializeBatch(result.batch) }),
+  });
+});
+
+// Lotes com saldo, do que vence primeiro ao que vence por último (sem validade no fim).
+router.get('/batches', async (req, res) => {
+  const urgency = parseEnumParam(req.query.urgency, URGENCY_LEVELS, 'urgency');
+  const where = { remaining: { gt: 0 } };
+  if (req.query.productId) where.productId = String(req.query.productId);
+
+  const batches = await prisma.stockBatch.findMany({
+    where,
+    include: { product: { select: { name: true, unit: true } } },
+    orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+  });
+  const now = today();
+  const result = batches.map((b) => serializeBatch(b, now));
+  res.json(urgency ? result.filter((b) => b.urgency === urgency) : result);
+});
+
+// Correção de validade digitada errada; não mexe em saldo.
+router.put('/batches/:id', validate(batchUpdateSchema), async (req, res) => {
+  const batch = await prisma.$transaction(async (tx) => {
+    const existing = await tx.stockBatch.findUnique({ where: { id: req.params.id } });
+    if (!existing) throw httpError(404, 'Lote não encontrado.');
+    await lockProduct(tx, existing.productId);
+    const updated = await tx.stockBatch.update({
+      where: { id: existing.id },
+      data: { expiryDate: toStoredDate(req.body.expiryDate) },
+      include: { product: { select: { name: true, unit: true } } },
     });
+    await refreshNextExpiry(tx, existing.productId);
     return updated;
   });
-
-  res.status(201).json({ productId: result.id, currentStock: Number(result.currentStock) });
+  res.json(serializeBatch(batch));
 });
 
 const MOVEMENT_TYPES = ['ENTRY', 'SALE', 'ADJUSTMENT', 'LOSS'];

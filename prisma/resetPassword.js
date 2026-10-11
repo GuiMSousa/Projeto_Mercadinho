@@ -28,7 +28,8 @@ async function main() {
   const passwordHash = await bcrypt.hash(password, 12);
   await prisma.user.update({
     where: { id: user.id },
-    data: { passwordHash, active: true },
+    // Derruba sessões já abertas, como toda outra troca de senha do sistema.
+    data: { passwordHash, active: true, sessionVersion: { increment: 1 } },
   });
 
   console.log(`Senha redefinida para ${email} (${user.role}). A conta também foi reativada, caso estivesse desativada.`);

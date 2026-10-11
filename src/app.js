@@ -7,7 +7,7 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 
 const config = require('./config');
-const { requireFetchHeader } = require('./auth');
+const { requireFetchHeader } = require('./middleware/auth');
 
 const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
@@ -17,6 +17,8 @@ const dashboardRoutes = require('./routes/dashboard');
 const reportsRoutes = require('./routes/reports');
 const usersRoutes = require('./routes/users');
 const importsRoutes = require('./routes/imports');
+const shoppingListRoutes = require('./routes/shoppingList');
+const cashSessionsRoutes = require('./routes/cashSessions');
 
 const app = express();
 
@@ -66,6 +68,8 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/imports', importsRoutes);
+app.use('/api/shopping-list', shoppingListRoutes);
+app.use('/api/cash-sessions', cashSessionsRoutes);
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 

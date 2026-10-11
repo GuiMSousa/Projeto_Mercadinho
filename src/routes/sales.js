@@ -1,11 +1,12 @@
 const express = require('express');
 const { z } = require('zod');
+const { PaymentMethod } = require('@prisma/client');
 const prisma = require('../db');
-const validate = require('../validate');
-const httpError = require('../httpError');
-const { authenticate, authorize } = require('../auth');
-const { parseDateParam, clampIntParam } = require('../queryHelpers');
-const { applyStockDelta } = require('../stockOps');
+const validate = require('../middleware/validate');
+const httpError = require('../lib/httpError');
+const { authenticate, authorize } = require('../middleware/auth');
+const { parseDateParam, clampIntParam } = require('../lib/queryHelpers');
+const { moveStock } = require('../services/stockOps');
 
 const router = express.Router();
 router.use(authenticate);
@@ -27,10 +28,12 @@ const saleSchema = z.object({
     )
     .min(1, 'A venda precisa de ao menos um item.')
     .max(100),
+  // Opcional: a tela atual ainda não envia, e até lá tudo conta como dinheiro.
+  paymentMethod: z.enum(Object.values(PaymentMethod)).default('CASH'),
 });
 
 router.post('/', validate(saleSchema), async (req, res) => {
-  const { items } = req.body;
+  const { items, paymentMethod } = req.body;
 
   const productIds = items.map((i) => i.productId);
   if (new Set(productIds).size !== productIds.length) {
@@ -38,7 +41,13 @@ router.post('/', validate(saleSchema), async (req, res) => {
   }
 
   const sale = await prisma.$transaction(async (tx) => {
-    const created = await tx.sale.create({ data: { sellerId: req.user.sub, totalAmount: '0' } });
+    // Lock compartilhado no caixa aberto: o fechamento (lock exclusivo) espera esta
+    // venda terminar antes de somar o caixa, e uma venda que chega depois do
+    // fechamento já não o encontra aberto. Vendas não se bloqueiam entre si.
+    const [openSession] = await tx.$queryRaw`SELECT "id" FROM "CashSession" WHERE "isOpen" = true FOR SHARE`;
+    const created = await tx.sale.create({
+      data: { sellerId: req.user.sub, totalAmount: '0', paymentMethod, cashSessionId: openSession?.id ?? null },
+    });
 
     // Uma única consulta para todos os itens, em vez de um SELECT por item
     // dentro do laço (N+1). Numa venda de 20 itens isso troca 20 idas ao
@@ -49,22 +58,11 @@ router.post('/', validate(saleSchema), async (req, res) => {
     const productById = new Map(products.map((p) => [p.id, p]));
 
     let total = 0;
+    const saleItems = [];
 
     for (const item of items) {
       const product = productById.get(item.productId);
       if (!product || !product.active) throw httpError(404, 'Um dos produtos da venda não foi encontrado.');
-
-      // UPDATE condicional atômico: só decrementa se houver saldo suficiente.
-      // A checagem "currentStock >= quantity" é avaliada e aplicada pelo banco
-      // dentro do mesmo statement/transação, o que evita venda com estoque
-      // negativo mesmo sob concorrência (duas vendas simultâneas do mesmo item).
-      const updateResult = await tx.product.updateMany({
-        where: { id: item.productId, currentStock: { gte: item.quantity } },
-        data: { currentStock: { decrement: item.quantity } },
-      });
-      if (updateResult.count === 0) {
-        throw httpError(409, `Estoque insuficiente para "${product.name}" (disponível: ${Number(product.currentStock)}).`);
-      }
 
       const unitPrice = Number(product.salePrice);
       const subtotal = unitPrice * item.quantity;
@@ -77,28 +75,30 @@ router.post('/', validate(saleSchema), async (req, res) => {
         throw httpError(400, 'O valor da venda excede o limite permitido pelo sistema.');
       }
 
-      await tx.saleItem.create({
-        data: {
-          saleId: created.id,
-          productId: item.productId,
-          quantity: item.quantity.toFixed(3),
-          unitPrice: unitPrice.toFixed(2),
-          subtotal: subtotal.toFixed(2),
-        },
+      // UPDATE condicional atômico (nunca vende além do saldo, nem com vendas
+      // simultâneas do mesmo item), baixa dos lotes na ordem PVPS de venda e o
+      // extrato com o saldo real relido na própria transação.
+      await moveStock(tx, {
+        productId: item.productId,
+        quantity: -item.quantity,
+        type: 'SALE',
+        reason: 'Venda',
+        userId: req.user.sub,
+        saleId: created.id,
+        order: 'SALE',
+        notFoundMessage: 'Um dos produtos da venda não foi encontrado.',
+        insufficient: (current) =>
+          httpError(409, `Estoque insuficiente para "${product.name}" (disponível: ${Number(current.currentStock)}).`),
       });
-      await tx.stockMovement.create({
-        data: {
-          productId: item.productId,
-          type: 'SALE',
-          quantity: (-item.quantity).toFixed(3),
-          previousStock: product.currentStock,
-          newStock: (Number(product.currentStock) - item.quantity).toFixed(3),
-          reason: 'Venda',
-          userId: req.user.sub,
-          saleId: created.id,
-        },
+      saleItems.push({
+        saleId: created.id,
+        productId: item.productId,
+        quantity: item.quantity.toFixed(3),
+        unitPrice: unitPrice.toFixed(2),
+        subtotal: subtotal.toFixed(2),
       });
     }
+    await tx.saleItem.createMany({ data: saleItems }); // um INSERT só, em vez de um por item
 
     return tx.sale.update({
       where: { id: created.id },
@@ -113,6 +113,7 @@ router.post('/', validate(saleSchema), async (req, res) => {
   res.status(201).json({
     id: sale.id,
     totalAmount: Number(sale.totalAmount),
+    paymentMethod: sale.paymentMethod,
     createdAt: sale.createdAt,
     itemCount: sale.items.length,
     items: sale.items.map((i) => ({
@@ -157,6 +158,7 @@ router.get('/', async (req, res) => {
       id: s.id,
       seller: s.seller.name,
       totalAmount: Number(s.totalAmount),
+      paymentMethod: s.paymentMethod,
       itemCount: s._count.items,
       createdAt: s.createdAt,
     })),
@@ -177,6 +179,7 @@ router.get('/:id', async (req, res) => {
     id: sale.id,
     seller: sale.seller.name,
     totalAmount: Number(sale.totalAmount),
+    paymentMethod: sale.paymentMethod,
     canceled: sale.canceled,
     createdAt: sale.createdAt,
     items: sale.items.map((i) => ({
@@ -190,32 +193,45 @@ router.get('/:id', async (req, res) => {
 
 router.post('/:id/cancel', authorize('ADMIN'), async (req, res) => {
   const sale = await prisma.$transaction(async (tx) => {
-    const existing = await tx.sale.findUnique({ where: { id: req.params.id }, include: { items: true } });
+    const existing = await tx.sale.findUnique({
+      where: { id: req.params.id },
+      include: { items: { include: { product: { select: { expiryDate: true } } } } },
+    });
     if (!existing) throw httpError(404, 'Venda não encontrada.');
-    if (existing.canceled) throw httpError(409, 'Venda já cancelada.');
+    // Compare-and-set: com dois cancelamentos simultâneos da mesma venda, só um
+    // passa daqui — o outro espera o lock da linha e recebe 409, sem devolver o
+    // estoque em dobro.
+    const claimed = await tx.sale.updateMany({ where: { id: existing.id, canceled: false }, data: { canceled: true } });
+    if (claimed.count === 0) throw httpError(409, 'Venda já cancelada.');
+
+    // De quais lotes cada item saiu (vendas anteriores aos lotes não têm esse rastro).
+    const saleMovements = await tx.stockMovement.findMany({
+      where: { saleId: existing.id, type: 'SALE' },
+      include: { batches: true },
+    });
+    const allocationsByProduct = new Map(saleMovements.map((m) => [m.productId, m.batches]));
 
     for (const item of existing.items) {
-      // requireActive:false — a venda pode ter sido de um produto já
-      // descontinuado; o estoque físico ainda precisa voltar mesmo assim.
-      const { previousStock, newStock } = await applyStockDelta(tx, item.productId, Number(item.quantity), { requireActive: false });
-      await tx.stockMovement.create({
-        data: {
-          productId: item.productId,
-          type: 'ADJUSTMENT',
-          quantity: item.quantity,
-          previousStock,
-          newStock,
-          reason: `Cancelamento da venda ${existing.id}`,
-          userId: req.user.sub,
-          saleId: existing.id,
-        },
+      const allocations = allocationsByProduct.get(item.productId) ?? [];
+      await moveStock(tx, {
+        productId: item.productId,
+        quantity: Number(item.quantity),
+        type: 'ADJUSTMENT',
+        reason: `Cancelamento da venda ${existing.id}`,
+        userId: req.user.sub,
+        saleId: existing.id,
+        // A venda pode ter sido de um produto já descontinuado; o estoque físico
+        // ainda precisa voltar mesmo assim.
+        requireActive: false,
+        // Volta aos lotes de onde saiu; venda sem rastro volta num lote novo com a
+        // validade atual do produto.
+        ...(allocations.length ? { restore: allocations } : { expiryDate: item.product.expiryDate }),
       });
     }
-
-    return tx.sale.update({ where: { id: existing.id }, data: { canceled: true } });
+    return { id: existing.id, canceled: true };
   }, { timeout: 15_000, maxWait: 5_000 });
 
-  res.json({ id: sale.id, canceled: sale.canceled });
+  res.json(sale);
 });
 
 module.exports = router;

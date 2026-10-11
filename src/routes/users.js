@@ -1,9 +1,9 @@
 const express = require('express');
 const { z } = require('zod');
 const prisma = require('../db');
-const validate = require('../validate');
-const httpError = require('../httpError');
-const { authenticate, authorize, hashPassword } = require('../auth');
+const validate = require('../middleware/validate');
+const httpError = require('../lib/httpError');
+const { authenticate, authorize, hashPassword } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(authenticate, authorize('ADMIN'));

@@ -4,10 +4,16 @@ Sistema web de controle de vendas e estoque para pequeno comerciante (mercadinho
 
 📖 **[Documentação técnica completa](DOCUMENTATION.md)** — stack tecnológica, arquitetura, modelo de dados, perfis de acesso e detalhamento de cada funcionalidade. Este README cobre o dia a dia: instalar, rodar, publicar e as decisões de segurança.
 
+📐 **[Especificação OpenSpec](openspec/)** — requisitos de cada área em [`openspec/specs/`](openspec/specs/) e o contrato HTTP completo (OpenAPI 3.1) em [`openspec/openapi.yaml`](openspec/openapi.yaml). Veja [Especificação (OpenSpec + OpenAPI)](#especificação-openspec--openapi).
+
 ## O que o sistema faz
 
-- **Vendas**: tela de caixa (busca produto por nome/código de barras, monta o carrinho, confirma a venda). Cada venda desconta o estoque automaticamente.
-- **Estoque**: cadastro de produtos, entradas de mercadoria (compras), ajustes/baixas (perda, vencimento, quebra), e histórico completo de movimentações.
+- **Vendas**: tela de caixa (busca produto por nome/código de barras, monta o carrinho, confirma a venda). Cada venda desconta o estoque automaticamente e registra a forma de pagamento (dinheiro, Pix, débito ou crédito — dinheiro quando não informada).
+- **Estoque em lotes**: cada entrada de mercadoria vira um lote com quantidade e validade; ajustes/baixas (perda, vencimento, quebra) e histórico completo de movimentações, com o rastro de quanto saiu de cada lote.
+- **PVPS (Primeiro que Vence, Primeiro que Sai)**: a venda baixa primeiro o lote válido que vence antes; lotes vencidos só saem por perda (ou se não houver mais lote válido). Cancelar uma venda devolve a mercadoria aos mesmos lotes.
+- **Semáforo de urgência**: todo produto vem classificado em vermelho (sem estoque, vencido ou vencendo em até 7 dias), amarelo (no mínimo ou vencendo em 8 a 30 dias) ou verde, com os motivos — e a listagem filtra por cor.
+- **Lista de compras**: produtos com estoque menor ou igual ao mínimo, por categoria, também em texto pronto para mandar ao fornecedor pelo WhatsApp.
+- **Caixa**: abertura com fundo de troco e fechamento com o dinheiro contado; o sistema compara com o esperado (fundo + vendas em dinheiro) e aponta sobra ou falta. O funcionário fecha "às cegas"; o dono vê a conciliação e o histórico.
 - **Importação de planilha**: carrega e atualiza o catálogo a partir de um Excel (`.xlsx`), CSV ou de dados colados direto do Excel/Google Planilhas — reconhece as colunas sozinho, mostra tudo para conferência e só grava depois que o dono confirma.
 - **Previsão de esgotamento**: com base na média de vendas dos últimos 30 dias, o sistema estima em quantos dias cada produto vai acabar — para saber o que repor antes de faltar.
 - **Produtos parados**: lista produtos com estoque mas sem nenhuma venda nos últimos 60 dias — ajuda a evitar comprar mais do que gira.
@@ -23,12 +29,13 @@ Sistema web de controle de vendas e estoque para pequeno comerciante (mercadinho
 
 ## Rodando localmente (para desenvolvimento)
 
-Pré-requisitos: Node.js 18+ e um PostgreSQL acessível (local ou na nuvem).
+Pré-requisitos: Node.js 20+ e um PostgreSQL acessível (local, na nuvem, ou o container do `docker-compose.yml`).
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.example .env    # PowerShell: Copy-Item .env.example .env
 # edite o .env com sua DATABASE_URL, JWT_SECRET, ADMIN_EMAIL/ADMIN_PASSWORD
+docker compose up -d db # opcional: PostgreSQL local em localhost:5433 (veja o .env.example)
 npm run prisma:migrate
 npm run seed            # cria o primeiro usuário administrador
 npm run seed:products   # opcional: carrega ~24 produtos de exemplo (secos e molhados) com validade
@@ -112,15 +119,18 @@ Cadastrar centenas de produtos à mão é o maior obstáculo para começar a usa
 
 Depois do primeiro login, troque a senha do administrador em **Usuários**.
 
-### Esqueci a senha do administrador
+### Esqueci a senha
 
-Se o único administrador esquecer a senha, não há tela de "esqueci minha senha" (de propósito — evita a superfície de ataque de um fluxo de recuperação por e-mail). Quem tem acesso ao servidor/banco pode redefinir via:
+A tela **Esqueci a senha** gera um link de redefinição de uso único (válido por `PASSWORD_RESET_EXPIRES_MIN` minutos). Não há envio por e-mail: o link é registrado no **log do servidor**, e o dono o repassa ao funcionário. Fora de produção o link também volta na resposta e a tela leva direto à troca de senha; em produção (`NODE_ENV=production`) ele **nunca** volta na resposta — senão qualquer pessoa que soubesse o e-mail do dono assumiria a conta de administrador. O administrador também pode redefinir a senha de qualquer funcionário em **Usuários**.
+
+Se o próprio administrador ficar trancado para fora, quem tem acesso ao servidor/banco pode redefinir via:
 
 ```bash
 RESET_EMAIL=admin@example.com RESET_PASSWORD="NovaSenhaForte123!" npm run reset-password
+# PowerShell: $env:RESET_EMAIL="admin@example.com"; $env:RESET_PASSWORD="NovaSenhaForte123!"; npm run reset-password
 ```
 
-Isso também reativa a conta, caso tenha sido desativada por engano.
+Isso também reativa a conta, caso tenha sido desativada por engano, e derruba as sessões abertas com a senha antiga.
 
 ## Decisões de segurança
 
@@ -131,7 +141,7 @@ Isso também reativa a conta, caso tenha sido desativada por engano.
 - **XSS**: o frontend nunca usa `innerHTML` com dados vindos do servidor — toda renderização usa `textContent`/`createElement`.
 - **Autorização**: cada rota checa o papel do usuário no servidor (não só esconde botões na tela) — testado explicitamente: um usuário "caixa" recebe `403` ao chamar a API de usuários e nunca recebe o preço de custo dos produtos na resposta.
 - **Força bruta**: login limitado a 10 tentativas a cada 15 minutos por IP. O erro diz se foi o login (e-mail) ou a senha que errou — escolha de usabilidade que, em troca, revela se um e-mail está cadastrado.
-- **Condição de corrida no estoque**: toda operação que soma/subtrai do estoque (venda, entrada de compra, ajuste/perda, cancelamento de venda) usa um `UPDATE` condicional atômico (`WHERE estoque` dentro dos limites) via `src/stockOps.js`, nunca "ler em JS e escrever de volta um valor absoluto" — requisições simultâneas para o mesmo produto nunca se perdem ou deixam o estoque negativo/acima do limite.
+- **Condição de corrida no estoque**: toda operação que soma/subtrai do estoque (venda, entrada de compra, ajuste/perda, cancelamento de venda) usa um `UPDATE` condicional atômico (`WHERE estoque` dentro dos limites) via `src/services/stockOps.js`, nunca "ler em JS e escrever de volta um valor absoluto" — requisições simultâneas para o mesmo produto nunca se perdem ou deixam o estoque negativo/acima do limite. O extrato registra o saldo anterior/novo relido dentro da própria transação, então também fica correto sob concorrência (antes, 10 vendas simultâneas gravavam "10 → 9" repetido no extrato).
 - **Exclusão de produtos/usuários**: é lógica (campo `active`), nunca física — preserva o histórico de vendas para relatórios e auditoria.
 - **Erros**: mensagens de erro internas nunca vazam para o cliente (log no servidor, resposta genérica ao usuário).
 - **Segredos**: `.env` nunca é versionado (`.gitignore`); a aplicação recusa subir em produção com `JWT_SECRET` fraco/ausente, e força cookie `Secure` em produção independentemente do `.env`.
@@ -143,7 +153,7 @@ Isso também reativa a conta, caso tenha sido desativada por engano.
 - **`trust proxy` seguro por padrão**: o servidor não confia no cabeçalho `X-Forwarded-For` a menos que `TRUST_PROXY` seja explicitamente configurado no `.env` — evita que qualquer requisição finja vir de um IP diferente a cada tentativa e contorne o limite de tentativas de login.
 - **E-mail sempre criptografado**: a conexão SMTP exige TLS (implícito na porta 465, ou STARTTLS obrigatório em qualquer outra porta) — nunca envia a senha do SMTP nem os níveis de estoque em texto plano na rede, e nunca aceita um certificado não confiável ou de host errado (testado com um servidor SMTP simulado sem TLS e outro com certificado inválido — ambos corretamente recusados). E-mail só em texto puro, nunca HTML, eliminando riscos de phishing/renderização.
 - **Detalhe de produto respeita o mesmo filtro da listagem**: um produto desativado fica invisível para quem não é admin também na rota de detalhe (`GET /products/:id`), não só na listagem — evita que alguém veja um produto descontinuado só por saber ou adivinhar o ID.
-- **Recuperação de senha do administrador**: sem fluxo de "esqueci minha senha" por e-mail (superfície de ataque a menos), mas com um script de emergência (`npm run reset-password`) para quem já tem acesso ao servidor/banco não ficar trancado para sempre fora do próprio sistema.
+- **Recuperação de senha**: link de uso único (token aleatório de 256 bits, guardado só como hash SHA-256, com validade curta) que vai para o log do servidor — em produção ele nunca volta na resposta da API, o que fecharia a porta para assumir qualquer conta só sabendo o e-mail. Usar o link derruba todas as sessões do usuário. Para o administrador trancado para fora, há o script de emergência `npm run reset-password`.
 - **Reativação de produto**: um produto desativado pode ser reativado (pela tela ou pela API) — antes não havia nenhuma forma de desfazer uma desativação a não ser editando o banco diretamente.
 - **Limite de requisições realista**: o teto geral por IP (`API_RATE_LIMIT_MAX`, padrão 300/min) foi calibrado testando carga real — o valor inicial de 120/min chegava a bloquear vendas legítimas quando vários caixas da mesma loja (mesmo IP) vendiam ao mesmo tempo.
 
@@ -161,7 +171,7 @@ Além da segurança, o projeto passou por uma rodada de auditoria de qualidade/U
 - **N+1 query na criação de vendas**: uma venda com N itens fazia N consultas sequenciais de leitura antes de N gravações. Corrigido para 1 consulta em lote + N gravações (as gravações continuam individuais, pois cada uma precisa do `UPDATE` atômico condicional que impede sobrevenda).
 - **Overflow horizontal em telas estreitas**: tabelas largas (ex: Produtos, com 8 colunas) empurravam a página inteira para o lado num celular. Corrigido envolvendo cada tabela num contêiner com rolagem própria — testado matematicamente via navegador (largura da página sem overflow, tabela rolando dentro do próprio espaço).
 - **Acessibilidade de formulários**: 15 campos tinham `<label>` visualmente ao lado do campo mas sem associação programática (`for`/`id`) — leitores de tela não conseguiam ligar o rótulo ao campo. Corrigido em todos os formulários, e adicionado `aria-label` nos campos de busca (que não têm rótulo visível por design).
-- **Duplicação de lógica** entre painel, relatórios e e-mail de alerta (cálculo de "estoque baixo/prestes a esgotar" e "produtos parados" estava repetido em 3 lugares) — extraída para funções compartilhadas em `src/forecast.js`.
+- **Duplicação de lógica** entre painel, relatórios e e-mail de alerta (cálculo de "estoque baixo/prestes a esgotar" e "produtos parados" estava repetido em 3 lugares) — extraída para funções compartilhadas em `src/services/forecast.js` (que desconsidera vendas canceladas).
 - **Produto desativado não podia ser reativado** — funcional, não só de segurança: cobre o caso de uso central de desfazer uma desativação por engano.
 
 ## Testes automatizados
@@ -170,7 +180,7 @@ Além da segurança, o projeto passou por uma rodada de auditoria de qualidade/U
 npm test
 ```
 
-Roda uma suíte de testes de integração ([test/integration.test.js](test/integration.test.js)) com o test runner nativo do Node (`node:test`, sem dependências novas) contra um PostgreSQL real — sobe a aplicação de verdade em memória e faz requisições HTTP reais. Cobre regressão dos bugs mais graves encontrados na auditoria: condição de corrida em estoque concorrente (entradas e vendas simultâneas), revogação de sessão em tempo real, autorização por papel, CSRF, SQL injection, validação de data de calendário, limite de overflow numérico, e reativação de produto. A importação de planilha tem seu próprio bloco: autorização, leitura de `.xlsx`, formatos numéricos e de data brasileiros, rastro de auditoria no estoque, e as travas contra duplicidade e contra sobrescrever o produto dono de um código de barras.
+Roda o teste de contrato ([test/contract.test.js](test/contract.test.js), confere que `openspec/openapi.yaml` documenta exatamente as rotas do Express — não usa banco) e uma suíte de testes de integração ([test/integration.test.js](test/integration.test.js)) com o test runner nativo do Node (`node:test`, sem dependências novas) contra um PostgreSQL real — sobe a aplicação de verdade em memória e faz requisições HTTP reais. Cobre regressão dos bugs mais graves encontrados na auditoria: condição de corrida em estoque concorrente (entradas e vendas simultâneas), revogação de sessão em tempo real, autorização por papel, CSRF, SQL injection, validação de data de calendário, limite de overflow numérico, e reativação de produto. A importação de planilha tem seu próprio bloco: autorização, leitura de `.xlsx`, formatos numéricos e de data brasileiros, rastro de auditoria no estoque, e as travas contra duplicidade e contra sobrescrever o produto dono de um código de barras. Os lotes, o semáforo, a lista de compras e o caixa também têm blocos próprios: ordem PVPS da venda e da perda, devolução ao lote de origem no cancelamento (inclusive com dois cancelamentos simultâneos), edição de validade, as cores do semáforo, a conciliação só com dinheiro, o fechamento cego e vendas simultâneas ao fechamento.
 
 **Atenção**: a suíte apaga todos os dados do banco apontado por `DATABASE_URL` antes de rodar. Use sempre um banco dedicado a testes — nunca aponte para dados reais. Por segurança, a suíte recusa rodar a menos que o nome do banco contenha "test", ou que `ALLOW_DB_RESET=true` seja definido explicitamente.
 
@@ -180,9 +190,43 @@ Com o ambiente Docker do projeto já no ar, um banco de testes separado sai assi
 docker compose exec db psql -U postgres -c "CREATE DATABASE contro_vend_test"
 ```
 
+Aponte `TEST_DATABASE_URL` no `.env` para ele (a suíte usa essa variável no lugar de `DATABASE_URL`, em qualquer terminal — inclusive PowerShell/cmd) e aplique as migrations uma vez:
+
 ```bash
-DATABASE_URL="postgresql://postgres:changeme_local_only@localhost:5433/contro_vend_test?schema=public" npm test
+# no .env: TEST_DATABASE_URL="postgresql://postgres:changeme_local_only@localhost:5433/contro_vend_test?schema=public"
+
+# uma vez (e a cada migration nova), cria as tabelas no banco de teste:
+DATABASE_URL="postgresql://postgres:changeme_local_only@localhost:5433/contro_vend_test?schema=public" npx prisma migrate deploy
+# PowerShell:
+#   $env:DATABASE_URL="postgresql://postgres:changeme_local_only@localhost:5433/contro_vend_test?schema=public"; npx prisma migrate deploy; Remove-Item Env:DATABASE_URL
+
+npm test
 ```
+
+## Especificação (OpenSpec + OpenAPI)
+
+O projeto segue o fluxo de [OpenSpec](https://github.com/Fission-AI/OpenSpec) (desenvolvimento guiado por especificação):
+
+```
+openspec/
+├── config.yaml        # contexto do projeto e regras usadas pelo OpenSpec/assistentes de IA
+├── openapi.yaml       # contrato HTTP (OpenAPI 3.1): 38 endpoints, schemas e erros
+├── specs/             # fonte da verdade do comportamento, uma pasta por capacidade
+│   ├── api-platform/  auth/  users/  products/  stock/  sales/
+│   └── dashboard/  reports/  product-import/  daily-alerts/  shopping-list/  cash-register/
+└── changes/           # propostas de mudança em andamento (e archive/ das concluídas)
+```
+
+Cada `spec.md` lista requisitos (`SHALL`/`MUST`) com cenários `WHEN`/`THEN`; o `openapi.yaml` descreve os payloads. Os dois são verificados automaticamente:
+
+```bash
+npm run spec:check   # valida as specs (openspec --strict), faz lint do OpenAPI (Redocly) e roda o teste de contrato
+npm run spec:docs    # gera openspec/openapi.html (referência navegável da API) — abra no navegador
+```
+
+Para explorar as specs no terminal, instale o CLI uma vez (`npm install -g @fission-ai/openspec@1.13.2`) e use `openspec list --specs`, `openspec show sales` ou `openspec view` (painel interativo). O `openapi.yaml` também pode ser importado direto no Postman/Insomnia ou aberto no [Swagger Editor](https://editor.swagger.io).
+
+**Fluxo para uma mudança nova** (no Claude Code, com os comandos `/opsx:*` instalados pelo `openspec init`): `/opsx:propose "descrição"` cria `openspec/changes/<nome>/` com proposta, delta das specs, design e tarefas → `/opsx:apply` implementa → `/opsx:archive` incorpora o delta em `openspec/specs/`. Se a mudança mexer na API, atualize também o `openapi.yaml` — o teste de contrato quebra se rota e documentação divergirem.
 
 ## Testes realizados manualmente
 
@@ -192,6 +236,7 @@ Além da suíte automatizada, o sistema foi testado manualmente de ponta a ponta
 
 - Leitor de código de barras via câmera do celular (a busca por código de barras já funciona digitando).
 - Exportação de relatórios em PDF/Excel.
-- Validade por lote de compra (hoje a validade é por produto, conforme decidido).
+- Telas para o que já existe na API: lotes (consulta e correção de validade), semáforo, lista de compras, abertura/fechamento de caixa e forma de pagamento na venda — hoje a interface ainda não envia `paymentMethod`, então toda venda conta como dinheiro.
+- Troco e valor recebido na venda em dinheiro (com bloqueio de valor pago menor que o total), previstos no relatório do Mercadinho.
 - Busca de produtos insensível a acento (hoje "feijao" não encontra "Feijão" — só busca por substring literal).
 - Estados de carregamento explícitos na interface (hoje uma requisição lenta não mostra nenhum indicador visual de "carregando").

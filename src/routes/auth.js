@@ -4,9 +4,9 @@ const crypto = require('crypto');
 const { z } = require('zod');
 const prisma = require('../db');
 const config = require('../config');
-const validate = require('../validate');
-const httpError = require('../httpError');
-const { hashPassword, verifyPassword, signToken, setAuthCookie, clearAuthCookie, authenticate } = require('../auth');
+const validate = require('../middleware/validate');
+const httpError = require('../lib/httpError');
+const { hashPassword, verifyPassword, signToken, setAuthCookie, clearAuthCookie, authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -129,9 +129,10 @@ router.post('/register', registerLimiter, validate(registerSchema), async (req, 
 });
 
 // Solicitação de reset. Resposta SEMPRE idêntica, exista ou não o e-mail —
-// anti-enumeração. Como não há SMTP, o link/token é devolvido na própria
-// resposta (e também logado no servidor). Em produção com SMTP configurado,
-// este campo sairia da resposta e o link iria só por e-mail.
+// anti-enumeração. Não há envio por e-mail: o link é logado no servidor e,
+// só fora de produção, devolvido também na resposta (atalho de desenvolvimento).
+// Em produção devolvê-lo deixaria qualquer um que saiba o e-mail do dono
+// assumir a conta de administrador.
 router.post('/forgot-password', forgotLimiter, validate(forgotSchema), async (req, res) => {
   const { email } = req.body;
   const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
@@ -164,7 +165,7 @@ router.post('/forgot-password', forgotLimiter, validate(forgotSchema), async (re
   // Em dev fica visível no console; em prod vai para o log da aplicação.
   console.log(`[reset] link de redefinição para ${user.email}: ${resetUrl}`);
 
-  return res.json({ ...generic, resetUrl });
+  return res.json(config.nodeEnv === 'production' ? generic : { ...generic, resetUrl });
 });
 
 // Conclusão do reset. Valida token (hash, não expirado, não usado), troca a

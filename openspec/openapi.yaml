@@ -1,0 +1,2339 @@
+openapi: 3.1.0
+info:
+  title: Contro Vend API
+  version: 1.0.0
+  summary: Vendas (PDV) e estoque para um mercadinho de secos e molhados.
+  description: |
+    Contrato HTTP do Contro Vend. Os requisitos de comportamento de cada área estão
+    nas specs OpenSpec em `openspec/specs/<capacidade>/spec.md`; este arquivo descreve
+    endpoints, parâmetros, corpos e respostas. `test/contract.test.js` falha se as
+    rotas do Express e este arquivo divergirem.
+
+    **Sessão:** `POST /api/auth/login` (ou `/register`) grava o JWT no cookie httpOnly
+    `cv_token` (8 h). Toda rota autenticada revalida o usuário no banco a cada
+    requisição: conta desativada ou senha trocada derrubam a sessão na hora (401).
+
+    **Perfis:** `ADMIN` (o dono, único) e `CASHIER` (funcionário). Rotas marcadas
+    "Somente ADMIN" respondem 403 para caixas. Caixas nunca recebem preço de custo.
+
+    **CSRF:** todo método diferente de GET/HEAD/OPTIONS exige o cabeçalho
+    `X-Requested-With: fetch`; sem ele a resposta é 403 antes de qualquer outra checagem.
+
+    **Erros:** sempre `{ "error": "<mensagem em pt-BR>" }`; erros de validação trazem
+    também `details`. Erros internos nunca expõem detalhes (500 genérico).
+
+    **Limites:** 300 requisições/min por IP em `/api` (configurável); corpo JSON de até
+    100 kB (4 MB nas rotas de importação). Valores monetários e quantidades são `number`.
+  license:
+    name: Proprietário (uso privado)
+    identifier: UNLICENSED
+servers:
+  - url: /
+    description: >-
+      Mesma origem do app — http://localhost:3000 com `npm run dev`,
+      http://localhost:3100 com Docker Compose, ou o domínio de produção.
+security:
+  - cookieAuth: []
+tags:
+  - name: Auth
+    description: Login, sessão, cadastro público e recuperação de senha. Spec `openspec/specs/auth`.
+  - name: Products
+    description: Catálogo de produtos. Spec `openspec/specs/products`.
+  - name: Stock
+    description: >-
+      Entradas (cada uma cria um lote com validade), ajustes, perdas, lotes e extrato de
+      estoque (somente ADMIN). Toda baixa segue o PVPS. Spec `openspec/specs/stock`.
+  - name: Sales
+    description: Ponto de venda, histórico e cancelamento. Spec `openspec/specs/sales`.
+  - name: Dashboard
+    description: Painel inicial com alertas e indicadores. Spec `openspec/specs/dashboard`.
+  - name: Reports
+    description: Relatórios gerenciais e previsão de esgotamento (somente ADMIN). Spec `openspec/specs/reports`.
+  - name: Users
+    description: Gestão de contas (somente ADMIN). Spec `openspec/specs/users`.
+  - name: Imports
+    description: Importação de produtos por planilha (somente ADMIN). Spec `openspec/specs/product-import`.
+  - name: ShoppingList
+    description: Lista de compras gerada pelo estoque mínimo (JSON ou texto para WhatsApp). Spec `openspec/specs/shopping-list`.
+  - name: CashSessions
+    description: >-
+      Abertura e fechamento do caixa com conciliação do dinheiro. Fechamento cego para
+      CASHIER; valores e histórico só para ADMIN. Spec `openspec/specs/cash-register`.
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Entrar com e-mail e senha
+      description: Limite de 10 tentativas por IP a cada 15 minutos. Define o cookie `cv_token`.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Sessão aberta.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUser'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: '"Login incorreto." (e-mail inexistente ou conta desativada) ou "Senha incorreta."'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Auto-cadastro de funcionário
+      description: >-
+        Cria uma conta CASHIER ativa e já abre a sessão. Campos extras (como `role`) são
+        rejeitados. Limite de 5 cadastros por IP por hora.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Conta criada e sessão aberta.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUser'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/auth/forgot-password:
+    post:
+      tags: [Auth]
+      operationId: forgotPassword
+      summary: Pedir link de recuperação de senha
+      description: >-
+        Resposta sempre igual, exista ou não o e-mail. O link é registrado no log do
+        servidor; `resetUrl` só volta na resposta fora de produção. Limite de 5 pedidos
+        por IP a cada 15 minutos.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+      responses:
+        '200':
+          description: Pedido aceito (resposta genérica).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForgotPasswordResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/auth/reset-password:
+    post:
+      tags: [Auth]
+      operationId: resetPassword
+      summary: Definir nova senha com o token de recuperação
+      description: >-
+        Token de uso único. Troca a senha e derruba todas as sessões do usuário. Limite
+        de 10 tentativas por IP a cada 15 minutos.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: Senha redefinida.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: Dados inválidos ou "Link de recuperação inválido, expirado ou já utilizado."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Sair (apaga o cookie de sessão)
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      responses:
+        '200':
+          description: Cookie removido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: Usuário da sessão atual
+      responses:
+        '200':
+          description: Dados do usuário logado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      summary: Listar produtos
+      description: >-
+        Sem `page`/`pageSize` devolve o array completo; com qualquer um deles devolve um
+        objeto paginado. Todo produto traz o semáforo (`urgency`, `urgencyReasons`,
+        `daysToExpiry`). `costPrice` e `margin` só aparecem para ADMIN.
+      parameters:
+        - name: query
+          in: query
+          description: Trecho do nome (sem diferenciar maiúsculas).
+          schema:
+            type: string
+        - name: category
+          in: query
+          description: Categoria exata.
+          schema:
+            type: string
+        - name: lowStock
+          in: query
+          description: '`true` para só produtos com saldo menor ou igual ao mínimo.'
+          schema:
+            type: string
+            enum: ['true', 'false']
+        - name: includeInactive
+          in: query
+          description: '`true` inclui produtos desativados (só tem efeito para ADMIN).'
+          schema:
+            type: string
+            enum: ['true', 'false']
+        - name: urgency
+          in: query
+          description: Só produtos nesse nível do semáforo. Valor inválido → 400.
+          schema:
+            $ref: '#/components/schemas/Urgency'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Produtos em ordem alfabética.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  - $ref: '#/components/schemas/ProductPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Cadastrar produto (somente ADMIN)
+      description: >-
+        Estoque inicial maior que zero cria o primeiro lote (com a `expiryDate` informada)
+        e uma movimentação ENTRY na mesma transação. Sem estoque inicial, a validade é descartada.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+      responses:
+        '201':
+          description: Produto criado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/products/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Products]
+      operationId: getProduct
+      summary: Detalhar produto
+      description: Produto desativado responde 404 para quem não é ADMIN.
+      responses:
+        '200':
+          description: Produto encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Products]
+      operationId: updateProduct
+      summary: Editar ou reativar produto (somente ADMIN)
+      description: >-
+        Atualização parcial; o saldo de estoque não muda por esta rota. `expiryDate` igual
+        à validade atual é ignorada; diferente, é aplicada aos lotes com saldo quando todos
+        têm a mesma validade — 400 se o produto está sem saldo, 409 se os lotes vencem em
+        datas diferentes (corrija em `PUT /api/stock/batches/{id}`).
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductUpdate'
+      responses:
+        '200':
+          description: Produto atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [Products]
+      operationId: deactivateProduct
+      summary: Desativar produto (somente ADMIN)
+      description: Exclusão lógica (`active = false`); vendas e movimentações são preservadas.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      responses:
+        '200':
+          description: Produto desativado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stock/entries:
+    post:
+      tags: [Stock]
+      operationId: createStockEntry
+      summary: Registrar entrada de mercadoria (somente ADMIN)
+      description: Cria um lote com a quantidade e a validade informadas e registra a movimentação ENTRY.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockEntryRequest'
+      responses:
+        '201':
+          description: Saldo atualizado, lote criado (`batch`) e movimentação ENTRY registrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockLevel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stock/adjustments:
+    post:
+      tags: [Stock]
+      operationId: createStockAdjustment
+      summary: Registrar ajuste ou perda (somente ADMIN)
+      description: >-
+        Quantidade com sinal. Com `batchId`, mexe só naquele lote do produto (404 se o lote
+        não for dele). Sem `batchId`, quantidade positiva cria um lote novo (validade
+        opcional em `expiryDate`) e negativa baixa pelo lote de validade mais antiga,
+        vencidos primeiro. Saldo negativo no produto ou no lote responde 400.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockAdjustmentRequest'
+      responses:
+        '201':
+          description: Saldo atualizado e movimentação registrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockLevel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stock/batches:
+    get:
+      tags: [Stock]
+      operationId: listStockBatches
+      summary: Lotes com saldo e o semáforo de validade (somente ADMIN)
+      description: Do lote que vence primeiro ao que vence por último; lotes sem validade no fim.
+      parameters:
+        - name: productId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: urgency
+          in: query
+          description: Filtra pela urgência da validade do lote. Valor inválido → 400.
+          schema:
+            $ref: '#/components/schemas/Urgency'
+      responses:
+        '200':
+          description: Lotes com saldo.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StockBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/stock/batches/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      tags: [Stock]
+      operationId: updateStockBatch
+      summary: Corrigir a validade de um lote (somente ADMIN)
+      description: Não mexe em saldos; recalcula a validade (e o semáforo) do produto.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockBatchUpdate'
+      responses:
+        '200':
+          description: Lote atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stock/movements:
+    get:
+      tags: [Stock]
+      operationId: listStockMovements
+      summary: Extrato de movimentações (somente ADMIN)
+      description: >-
+        Mais recentes primeiro. Sem `page`/`pageSize` devolve as 200 mais recentes; com
+        qualquer um deles devolve um objeto paginado.
+      parameters:
+        - name: productId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/MovementType'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Movimentações encontradas.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    maxItems: 200
+                    items:
+                      $ref: '#/components/schemas/StockMovement'
+                  - $ref: '#/components/schemas/StockMovementPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/sales:
+    get:
+      tags: [Sales]
+      operationId: listSales
+      summary: Histórico de vendas
+      description: Vendas não canceladas, mais recentes primeiro. CASHIER vê só as próprias.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Página de vendas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Sales]
+      operationId: createSale
+      summary: Registrar venda
+      description: >-
+        Preço e vendedor vêm sempre do servidor. A venda é atômica: estoque insuficiente
+        em qualquer item recusa a venda inteira (409).
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaleCreate'
+      responses:
+        '201':
+          description: Venda registrada (dados do comprovante).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/sales/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Sales]
+      operationId: getSale
+      summary: Detalhar venda
+      description: CASHIER só acessa as próprias vendas (403 para as dos outros).
+      responses:
+        '200':
+          description: Venda encontrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/sales/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Sales]
+      operationId: cancelSale
+      summary: Cancelar venda (somente ADMIN)
+      description: Devolve ao estoque cada item, com uma movimentação ADJUSTMENT por item.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      responses:
+        '200':
+          description: Venda cancelada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleCanceled'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboard
+      summary: Painel inicial
+      description: '`today`, `month` e `slowMoving` só vêm para ADMIN.'
+      responses:
+        '200':
+          description: Alertas e indicadores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/reports/forecast:
+    get:
+      tags: [Reports]
+      operationId: getStockForecast
+      summary: Previsão de esgotamento (somente ADMIN)
+      description: Média diária de vendas na janela `FORECAST_WINDOW_DAYS`; mais urgentes primeiro.
+      responses:
+        '200':
+          description: Previsão por produto ativo.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ForecastItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/reports/sales-summary:
+    get:
+      tags: [Reports]
+      operationId: getSalesSummary
+      summary: Resumo de vendas por período (somente ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Total, quantidade e total por dia (UTC).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/reports/top-products:
+    get:
+      tags: [Reports]
+      operationId: getTopProducts
+      summary: Produtos mais vendidos por receita (somente ADMIN)
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: limit
+          in: query
+          description: Valores fora de 1–50 caem no padrão.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        '200':
+          description: Ranking do período.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TopProduct'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/reports/slow-moving:
+    get:
+      tags: [Reports]
+      operationId: getSlowMovingProducts
+      summary: Produtos parados (somente ADMIN)
+      parameters:
+        - name: days
+          in: query
+          description: Janela sem vendas; valores fora de 1–365 caem no padrão.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 60
+      responses:
+        '200':
+          description: Produtos com estoque e sem vendas na janela.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SlowMovingProduct'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: Listar usuários (somente ADMIN)
+      responses:
+        '200':
+          description: Todas as contas, por nome.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Cadastrar funcionário (somente ADMIN)
+      description: A conta é sempre criada como CASHIER.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: Conta criada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      tags: [Users]
+      operationId: updateUser
+      summary: Editar usuário (somente ADMIN)
+      description: >-
+        Altera nome, status e senha (o papel não é editável). Trocar a senha derruba as
+        sessões do usuário; o administrador não pode desativar a si mesmo (400).
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: Conta atualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/imports/products/template:
+    get:
+      tags: [Imports]
+      operationId: downloadImportTemplate
+      summary: Baixar modelo de planilha (somente ADMIN)
+      responses:
+        '200':
+          description: Arquivo `modelo-produtos.xlsx`.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="modelo-produtos.xlsx"`'
+              schema:
+                type: string
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/imports/products/parse:
+    post:
+      tags: [Imports]
+      operationId: parseImportFile
+      summary: Ler planilha ou texto colado (somente ADMIN)
+      description: >-
+        Não grava nada. Aceita `.xlsx`/`.xlsm`/`.csv`/`.txt`/`.tsv` de até 5 MB e até
+        1.000 linhas de dados, ou texto colado do Excel/Google Planilhas.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000000
+      responses:
+        '200':
+          description: Grade lida e mapeamento sugerido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportParseResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+
+  /api/imports/products/preview:
+    post:
+      tags: [Imports]
+      operationId: previewImport
+      summary: Conferir o plano de importação (somente ADMIN)
+      description: Classifica cada linha (create/update/skip/error) sem gravar nada.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '200':
+          description: Plano linha a linha.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+
+  /api/imports/products/commit:
+    post:
+      tags: [Imports]
+      operationId: commitImport
+      summary: Gravar a importação (somente ADMIN)
+      description: >-
+        Executa o mesmo plano do preview, uma transação por linha, registrando toda
+        alteração de estoque no extrato.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '200':
+          description: Resultado da gravação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportCommitResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+
+  /api/shopping-list:
+    get:
+      tags: [ShoppingList]
+      operationId: getShoppingList
+      summary: Lista de compras (produtos com estoque menor ou igual ao mínimo)
+      description: Produtos ativos, por categoria e nome. Disponível a todo usuário autenticado; nunca traz preço de custo.
+      parameters:
+        - name: format
+          in: query
+          description: '`text` devolve texto pronto para colar no WhatsApp. Outro valor → 400.'
+          schema:
+            type: string
+            enum: [json, text]
+            default: json
+      responses:
+        '200':
+          description: Lista de compras.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShoppingList'
+            text/plain:
+              schema:
+                type: string
+                examples: ["*Lista de compras — 11/10/2026*\n\n*Laticínios*\n- Leite Integral UHT 1L: tem 2 UN, mínimo 20\n\n1 produto(s) para repor.\n"]
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/cash-sessions:
+    get:
+      tags: [CashSessions]
+      operationId: listCashSessions
+      summary: Histórico de caixas (somente ADMIN)
+      description: Do mais recente para o mais antigo; `from`/`to` filtram pela data de abertura.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Página de caixas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashSessionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [CashSessions]
+      operationId: openCashSession
+      summary: Abrir o caixa com o fundo de troco
+      description: Só um caixa aberto por vez na loja (409, inclusive em aberturas simultâneas).
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CashSessionOpen'
+      responses:
+        '201':
+          description: Caixa aberto.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/cash-sessions/current:
+    get:
+      tags: [CashSessions]
+      operationId: getCurrentCashSession
+      summary: Caixa aberto agora
+      description: ADMIN vê o dinheiro esperado até o momento e os totais por forma de pagamento; CASHIER não.
+      responses:
+        '200':
+          description: Caixa aberto.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/cash-sessions/current/close:
+    post:
+      tags: [CashSessions]
+      operationId: closeCashSession
+      summary: Fechar o caixa com o dinheiro contado
+      description: >-
+        Esperado = fundo de troco + vendas em dinheiro não canceladas do caixa; diferença =
+        contado − esperado (positiva é sobra). Os valores ficam gravados. Para CASHIER a
+        resposta é cega (só o que ele informou).
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CashSessionClose'
+      responses:
+        '200':
+          description: Caixa fechado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/cash-sessions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [CashSessions]
+      operationId: getCashSession
+      summary: Detalhar um caixa (somente ADMIN)
+      responses:
+        '200':
+          description: Caixa com a conciliação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: cv_token
+      description: JWT HS256 emitido no login/cadastro (httpOnly, SameSite=Lax, 8 h).
+
+  headers:
+    SessionCookie:
+      description: '`cv_token=<jwt>; Path=/; HttpOnly; SameSite=Lax` (+ `Secure` em produção).'
+      schema:
+        type: string
+
+  parameters:
+    XRequestedWith:
+      name: X-Requested-With
+      in: header
+      required: true
+      description: Proteção CSRF. Obrigatório em todo método que altera estado.
+      schema:
+        type: string
+        enum: [fetch]
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      description: Página (a partir de 1). Valores inválidos caem no padrão.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Itens por página. Valores fora de 1–100 caem no padrão.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    From:
+      name: from
+      in: query
+      description: Início do período (data ou data-hora ISO, ex. `2026-08-26`). Inválida → 400.
+      schema:
+        type: string
+    To:
+      name: to
+      in: query
+      description: Fim do período (data ou data-hora ISO). Inválida → 400.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Dados inválidos ou regra de negócio violada.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Sem sessão, sessão expirada ou revogada.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: '"Requisição bloqueada." (sem `X-Requested-With: fetch`) ou perfil sem permissão.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Recurso não encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflito com o estado atual (duplicidade, estoque insuficiente, já cancelada).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLarge:
+      description: Corpo acima do limite (100 kB; 4 MB nas rotas de importação).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Limite de requisições excedido para este IP.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          examples: ['Dados inválidos.']
+        details:
+          type: object
+          description: Só em erros de validação.
+          properties:
+            formErrors:
+              type: array
+              items:
+                type: string
+            fieldErrors:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+
+    Role:
+      type: string
+      enum: [ADMIN, CASHIER]
+
+    MovementType:
+      type: string
+      enum: [ENTRY, SALE, ADJUSTMENT, LOSS]
+
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 1
+          maxLength: 200
+
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 8
+          maxLength: 200
+
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+
+    ForgotPasswordResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          examples: ['Se o e-mail estiver cadastrado, as instruções de recuperação foram geradas.']
+        resetUrl:
+          type: string
+          format: uri
+          description: Só fora de produção e só quando o e-mail pertence a uma conta ativa.
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 500
+        password:
+          type: string
+          minLength: 8
+          maxLength: 200
+
+    SessionUser:
+      type: object
+      required: [id, name, email, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/Role'
+
+    CurrentUser:
+      allOf:
+        - $ref: '#/components/schemas/SessionUser'
+        - type: object
+          required: [active]
+          properties:
+            active:
+              type: boolean
+
+    UserSummary:
+      allOf:
+        - $ref: '#/components/schemas/SessionUser'
+        - type: object
+          required: [active]
+          properties:
+            active:
+              type: boolean
+
+    User:
+      allOf:
+        - $ref: '#/components/schemas/UserSummary'
+        - type: object
+          required: [createdAt]
+          properties:
+            createdAt:
+              type: string
+              format: date-time
+
+    UserCreate:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 8
+          maxLength: 200
+
+    UserUpdate:
+      type: object
+      description: Campos ausentes não mudam; `role` é ignorado.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        active:
+          type: boolean
+        password:
+          type: string
+          minLength: 8
+          maxLength: 200
+
+    Product:
+      type: object
+      required: [id, name, barcode, category, unit, salePrice, currentStock, minStock, expiryDate, active, urgency, urgencyReasons, daysToExpiry]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        barcode:
+          type: [string, 'null']
+        category:
+          type: [string, 'null']
+        unit:
+          type: string
+          examples: [UN]
+        salePrice:
+          type: number
+        currentStock:
+          type: number
+        minStock:
+          type: number
+        expiryDate:
+          type: [string, 'null']
+          format: date-time
+          description: Validade mais próxima entre os lotes com saldo (`null` sem estoque ou sem validade).
+        active:
+          type: boolean
+        urgency:
+          $ref: '#/components/schemas/Urgency'
+        urgencyReasons:
+          type: array
+          description: Motivos da cor, os vermelhos primeiro; vazio quando GREEN.
+          items:
+            $ref: '#/components/schemas/UrgencyReason'
+        daysToExpiry:
+          type: [integer, 'null']
+          description: Dias de calendário até a validade (negativo se vencido; `null` sem validade).
+        costPrice:
+          type: number
+          description: Só para ADMIN.
+        margin:
+          type: number
+          description: Preço de venda menos custo. Só para ADMIN.
+
+    ProductPage:
+      type: object
+      required: [totalCount, page, pageSize, products]
+      properties:
+        totalCount:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+
+    ProductCreate:
+      type: object
+      required: [name, costPrice, salePrice]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        barcode:
+          type: [string, 'null']
+          maxLength: 64
+        category:
+          type: [string, 'null']
+          maxLength: 80
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 10
+          default: UN
+        costPrice:
+          type: number
+          minimum: 0
+          maximum: 1000000
+        salePrice:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1000000
+        minStock:
+          type: number
+          minimum: 0
+          maximum: 1000000
+          default: 0
+        initialStock:
+          type: number
+          minimum: 0
+          maximum: 1000000
+          default: 0
+        expiryDate:
+          $ref: '#/components/schemas/DateOnly'
+
+    ProductUpdate:
+      type: object
+      description: Atualização parcial; envie `active` true/false para reativar/desativar.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        barcode:
+          type: [string, 'null']
+          maxLength: 64
+        category:
+          type: [string, 'null']
+          maxLength: 80
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 10
+        costPrice:
+          type: number
+          minimum: 0
+          maximum: 1000000
+        salePrice:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1000000
+        minStock:
+          type: number
+          minimum: 0
+          maximum: 1000000
+        expiryDate:
+          $ref: '#/components/schemas/DateOnly'
+        active:
+          type: boolean
+
+    DateOnly:
+      type: [string, 'null']
+      pattern: '^\d{4}-\d{2}-\d{2}$'
+      description: AAAA-MM-DD; precisa existir no calendário (2026-02-30 é recusada).
+      examples: ['2026-12-31']
+
+    StockEntryRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1000000
+        reason:
+          type: [string, 'null']
+          maxLength: 255
+        expiryDate:
+          $ref: '#/components/schemas/DateOnly'
+
+    StockAdjustmentRequest:
+      type: object
+      required: [productId, quantity, reason]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: number
+          description: Diferente de zero, com sinal (negativo baixa o estoque), módulo até 1.000.000.
+          minimum: -1000000
+          maximum: 1000000
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+        type:
+          type: string
+          enum: [ADJUSTMENT, LOSS]
+          default: ADJUSTMENT
+        batchId:
+          type: string
+          format: uuid
+          description: Lote do produto em que o ajuste é aplicado.
+        expiryDate:
+          $ref: '#/components/schemas/DateOnly'
+          description: Validade do lote novo; só com quantidade positiva e sem `batchId`.
+
+    Urgency:
+      type: string
+      enum: [RED, YELLOW, GREEN]
+      description: >-
+        Semáforo. RED: sem estoque, vencido ou vencendo em até 7 dias. YELLOW: estoque
+        menor ou igual ao mínimo ou vencendo em 8 a 30 dias. GREEN: o resto.
+
+    UrgencyReason:
+      type: string
+      enum: [OUT_OF_STOCK, EXPIRED, EXPIRES_SOON, LOW_STOCK, EXPIRING]
+      description: >-
+        OUT_OF_STOCK (saldo zerado), EXPIRED (vencido) e EXPIRES_SOON (vence em até 7 dias)
+        deixam RED; LOW_STOCK (saldo menor ou igual ao mínimo) e EXPIRING (vence em 8 a 30
+        dias) deixam YELLOW.
+
+    StockBatch:
+      type: object
+      required: [id, productId, product, unit, quantity, remaining, expiryDate, urgency, daysToExpiry, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        product:
+          type: string
+          description: Nome do produto.
+        unit:
+          type: string
+        quantity:
+          type: number
+          description: Quantidade recebida no lote.
+        remaining:
+          type: number
+          description: Saldo atual do lote.
+        expiryDate:
+          type: [string, 'null']
+          format: date-time
+        urgency:
+          $ref: '#/components/schemas/Urgency'
+        daysToExpiry:
+          type: [integer, 'null']
+          description: Dias de calendário até a validade (negativo se vencido; `null` sem validade).
+        createdAt:
+          type: string
+          format: date-time
+
+    StockBatchUpdate:
+      type: object
+      required: [expiryDate]
+      properties:
+        expiryDate:
+          $ref: '#/components/schemas/DateOnly'
+
+    StockLevel:
+      type: object
+      required: [productId, currentStock]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        currentStock:
+          type: number
+        batch:
+          $ref: '#/components/schemas/StockBatch'
+          description: Lote criado (sempre numa entrada; num ajuste, só se ele criou lote novo).
+
+    StockMovement:
+      type: object
+      required: [id, product, type, quantity, previousStock, newStock, reason, user, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        product:
+          type: string
+          description: Nome do produto.
+        type:
+          $ref: '#/components/schemas/MovementType'
+        quantity:
+          type: number
+          description: Com sinal (vendas e baixas são negativas).
+        previousStock:
+          type: number
+        newStock:
+          type: number
+        reason:
+          type: [string, 'null']
+        user:
+          type: string
+          description: Nome do responsável.
+        createdAt:
+          type: string
+          format: date-time
+
+    StockMovementPage:
+      type: object
+      required: [totalCount, page, pageSize, movements]
+      properties:
+        totalCount:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        movements:
+          type: array
+          items:
+            $ref: '#/components/schemas/StockMovement'
+
+    SaleCreate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: Um item por produto (productId repetido → 400).
+          items:
+            type: object
+            required: [productId, quantity]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              quantity:
+                type: number
+                exclusiveMinimum: 0
+                maximum: 10000
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+          description: Opcional; sem ele a venda é registrada como `CASH`.
+
+    PaymentMethod:
+      type: string
+      enum: [CASH, PIX, DEBIT_CARD, CREDIT_CARD]
+      description: Dinheiro, Pix, cartão de débito ou de crédito. Só `CASH` entra no dinheiro esperado do caixa.
+
+    SaleCreated:
+      type: object
+      required: [id, totalAmount, paymentMethod, createdAt, itemCount, items]
+      properties:
+        id:
+          type: string
+          format: uuid
+        totalAmount:
+          type: number
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+        createdAt:
+          type: string
+          format: date-time
+        itemCount:
+          type: integer
+        items:
+          type: array
+          items:
+            type: object
+            required: [product, unit, quantity, unitPrice, subtotal]
+            properties:
+              product:
+                type: string
+              unit:
+                type: string
+              quantity:
+                type: number
+              unitPrice:
+                type: number
+              subtotal:
+                type: number
+
+    SaleSummary:
+      type: object
+      required: [id, seller, totalAmount, paymentMethod, itemCount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        seller:
+          type: string
+        totalAmount:
+          type: number
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+        itemCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    SalePage:
+      type: object
+      required: [totalCount, page, pageSize, sales]
+      properties:
+        totalCount:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        sales:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleSummary'
+
+    SaleDetail:
+      type: object
+      required: [id, seller, totalAmount, paymentMethod, canceled, createdAt, items]
+      properties:
+        id:
+          type: string
+          format: uuid
+        seller:
+          type: string
+        totalAmount:
+          type: number
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+        canceled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            type: object
+            required: [product, quantity, unitPrice, subtotal]
+            properties:
+              product:
+                type: string
+              quantity:
+                type: number
+              unitPrice:
+                type: number
+              subtotal:
+                type: number
+
+    SaleCanceled:
+      type: object
+      required: [id, canceled]
+      properties:
+        id:
+          type: string
+          format: uuid
+        canceled:
+          type: boolean
+          const: true
+
+    ForecastItem:
+      type: object
+      required: [productId, name, unit, currentStock, minStock, avgDailySales, daysUntilStockout, lowStock]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        unit:
+          type: string
+        currentStock:
+          type: number
+        minStock:
+          type: number
+        avgDailySales:
+          type: number
+        daysUntilStockout:
+          type: [number, 'null']
+          description: '`null` quando não houve vendas na janela.'
+        lowStock:
+          type: boolean
+
+    ExpiringProduct:
+      type: object
+      required: [id, name, expiryDate, currentStock]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        expiryDate:
+          type: string
+          format: date-time
+        currentStock:
+          type: number
+
+    SlowMovingProduct:
+      type: object
+      required: [id, name, currentStock, capitalParado]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currentStock:
+          type: number
+        capitalParado:
+          type: number
+          description: Saldo × preço de custo.
+
+    PeriodTotal:
+      type: object
+      required: [total, count]
+      properties:
+        total:
+          type: number
+        count:
+          type: integer
+
+    Dashboard:
+      type: object
+      required: [lowStock, soonOut, expiring]
+      properties:
+        lowStock:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForecastItem'
+        soonOut:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForecastItem'
+        expiring:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpiringProduct'
+        today:
+          $ref: '#/components/schemas/PeriodTotal'
+        month:
+          $ref: '#/components/schemas/PeriodTotal'
+        slowMoving:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlowMovingProduct'
+
+    SalesSummary:
+      type: object
+      required: [total, count, byDay]
+      properties:
+        total:
+          type: number
+        count:
+          type: integer
+        byDay:
+          type: object
+          description: Total vendido por dia (`AAAA-MM-DD`, UTC).
+          additionalProperties:
+            type: number
+
+    TopProduct:
+      type: object
+      required: [productId, name, quantitySold, revenue]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        quantitySold:
+          type: number
+        revenue:
+          type: number
+
+    ImportFieldKey:
+      type: string
+      enum: [name, barcode, category, unit, costPrice, salePrice, stock, minStock, expiryDate]
+
+    ImportCell:
+      type: [string, number, boolean, 'null']
+
+    ImportMapping:
+      type: object
+      description: Campo → índice da coluna (0–39). `name` é obrigatório no preview/commit.
+      propertyNames:
+        $ref: '#/components/schemas/ImportFieldKey'
+      additionalProperties:
+        type: integer
+        minimum: 0
+        maximum: 39
+
+    ImportOptions:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [upsert, createOnly, updateOnly]
+          default: upsert
+        matchBy:
+          type: string
+          enum: [barcode, name]
+          default: barcode
+        stockMode:
+          type: string
+          enum: [ignore, set, add]
+          default: ignore
+
+    ImportParseResult:
+      type: object
+      required: [headers, rows, mapping, fields]
+      properties:
+        headers:
+          type: array
+          maxItems: 40
+          items:
+            type: string
+        rows:
+          type: array
+          maxItems: 1000
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/ImportCell'
+        mapping:
+          $ref: '#/components/schemas/ImportMapping'
+        fields:
+          type: array
+          items:
+            type: object
+            required: [key, label]
+            properties:
+              key:
+                $ref: '#/components/schemas/ImportFieldKey'
+              label:
+                type: string
+              required:
+                type: boolean
+
+    ImportRequest:
+      type: object
+      required: [headers, rows, mapping]
+      properties:
+        headers:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items:
+            type: string
+            maxLength: 200
+        rows:
+          type: array
+          maxItems: 1000
+          items:
+            type: array
+            maxItems: 40
+            items:
+              $ref: '#/components/schemas/ImportCell'
+        mapping:
+          $ref: '#/components/schemas/ImportMapping'
+        options:
+          $ref: '#/components/schemas/ImportOptions'
+
+    ImportValues:
+      type: object
+      description: Valores da linha já convertidos para os tipos do sistema.
+      properties:
+        name:
+          type: string
+        barcode:
+          type: string
+        category:
+          type: string
+        unit:
+          type: string
+        costPrice:
+          type: number
+        salePrice:
+          type: number
+        stock:
+          type: number
+        minStock:
+          type: number
+        expiryDate:
+          type: string
+          format: date
+
+    ImportPlanItem:
+      type: object
+      required: [line, values, errors, warnings, action]
+      properties:
+        line:
+          type: integer
+          description: Linha na planilha (a 1 é o cabeçalho).
+        values:
+          $ref: '#/components/schemas/ImportValues'
+        errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        action:
+          type: string
+          enum: [create, update, skip, error]
+        reason:
+          type: string
+          description: Motivo de um `skip`.
+        productId:
+          type: string
+          format: uuid
+        productName:
+          type: string
+        before:
+          type: object
+          description: Valores atuais do produto que será atualizado.
+          properties:
+            name:
+              type: string
+            salePrice:
+              type: number
+            costPrice:
+              type: number
+            currentStock:
+              type: number
+        stockDelta:
+          type: number
+          description: Positivo cria um lote com a validade da linha; negativo baixa pela ordem de perda do PVPS.
+        resultingStock:
+          type: number
+        applyExpiry:
+          type: boolean
+          description: A validade da linha será aplicada aos lotes com saldo (todos tinham a mesma validade).
+
+    ImportPreview:
+      type: object
+      required: [summary, items]
+      properties:
+        summary:
+          type: object
+          required: [create, update, skip, error, total]
+          properties:
+            create:
+              type: integer
+            update:
+              type: integer
+            skip:
+              type: integer
+            error:
+              type: integer
+            total:
+              type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportPlanItem'
+
+    ImportCommitResult:
+      type: object
+      required: [created, updated, skipped, failed, failures]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
+        skipped:
+          type: integer
+        failed:
+          type: integer
+        failures:
+          type: array
+          items:
+            type: object
+            required: [line, error]
+            properties:
+              line:
+                type: integer
+              name:
+                type: string
+              error:
+                type: string
+
+    ShoppingListItem:
+      type: object
+      required: [productId, name, category, unit, currentStock, minStock, avgDailySales, daysUntilStockout]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        category:
+          type: [string, 'null']
+        unit:
+          type: string
+        currentStock:
+          type: number
+        minStock:
+          type: number
+        avgDailySales:
+          type: number
+          description: Média diária de vendas na janela da previsão.
+        daysUntilStockout:
+          type: [number, 'null']
+          description: '`null` quando não houve vendas na janela.'
+
+    ShoppingList:
+      type: object
+      required: [generatedAt, totalItems, items]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        totalItems:
+          type: integer
+        items:
+          type: array
+          description: Por categoria (sem categoria por último) e nome.
+          items:
+            $ref: '#/components/schemas/ShoppingListItem'
+
+    CashSessionOpen:
+      type: object
+      required: [openingAmount]
+      properties:
+        openingAmount:
+          type: number
+          minimum: 0
+          maximum: 1000000
+          description: Fundo de troco.
+
+    CashSessionClose:
+      type: object
+      required: [countedAmount]
+      properties:
+        countedAmount:
+          type: number
+          minimum: 0
+          maximum: 1000000
+          description: Dinheiro contado na gaveta.
+        notes:
+          type: [string, 'null']
+          maxLength: 500
+
+    PaymentTotals:
+      type: object
+      required: [CASH, PIX, DEBIT_CARD, CREDIT_CARD]
+      properties:
+        CASH:
+          type: number
+        PIX:
+          type: number
+        DEBIT_CARD:
+          type: number
+        CREDIT_CARD:
+          type: number
+
+    CashSession:
+      type: object
+      description: >-
+        Os campos de `expectedAmount` em diante só vêm para ADMIN. Com o caixa aberto,
+        `expectedAmount` é o esperado até agora e `difference` é `null`; fechado, são os
+        valores gravados no fechamento.
+      required: [id, status, openedBy, openedAt, openingAmount, closedBy, closedAt, countedAmount, notes]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [OPEN, CLOSED]
+        openedBy:
+          type: string
+        openedAt:
+          type: string
+          format: date-time
+        openingAmount:
+          type: number
+        closedBy:
+          type: [string, 'null']
+        closedAt:
+          type: [string, 'null']
+          format: date-time
+        countedAmount:
+          type: [number, 'null']
+        notes:
+          type: [string, 'null']
+        expectedAmount:
+          type: number
+          description: Fundo de troco + vendas em dinheiro não canceladas do caixa.
+        difference:
+          type: [number, 'null']
+          description: Contado − esperado (positivo é sobra, negativo é falta).
+        salesCount:
+          type: integer
+        salesTotal:
+          type: number
+        totalsByPaymentMethod:
+          $ref: '#/components/schemas/PaymentTotals'
+
+    CashSessionPage:
+      type: object
+      required: [totalCount, page, pageSize, sessions]
+      properties:
+        totalCount:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CashSession'

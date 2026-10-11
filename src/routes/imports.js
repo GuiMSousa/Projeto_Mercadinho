@@ -4,12 +4,13 @@ const ExcelJS = require('exceljs');
 const { z } = require('zod');
 
 const prisma = require('../db');
-const validate = require('../validate');
-const httpError = require('../httpError');
-const { authenticate, authorize } = require('../auth');
-const { applyStockDelta } = require('../stockOps');
-const { MAX_ROWS, MAX_COLUMNS, parseFile, parseDelimited } = require('../spreadsheet');
-const { FIELDS, guessMapping, normalizeRow, nameKey } = require('../productImport');
+const validate = require('../middleware/validate');
+const httpError = require('../lib/httpError');
+const { authenticate, authorize } = require('../middleware/auth');
+const { toStoredDate } = require('../lib/calendar');
+const { moveStock, expiryChange, setOpenBatchesExpiry } = require('../services/stockOps');
+const { MAX_ROWS, MAX_COLUMNS, parseFile, parseDelimited } = require('../services/spreadsheet');
+const { FIELDS, guessMapping, normalizeRow, nameKey } = require('../services/productImport');
 
 const router = express.Router();
 // Importar produtos reescreve preços e saldos em massa — é ação de dono, não de caixa.
@@ -65,13 +66,24 @@ async function analyze({ rows, mapping, options }) {
     throw httpError(400, 'Indique qual coluna da planilha tem o nome do produto.');
   }
 
-  const products = await prisma.product.findMany({
-    select: {
-      id: true, name: true, barcode: true, active: true,
-      currentStock: true, costPrice: true, salePrice: true, minStock: true,
-      unit: true, category: true, expiryDate: true,
-    },
-  });
+  const [products, openBatches] = await Promise.all([
+    prisma.product.findMany({
+      select: {
+        id: true, name: true, barcode: true, active: true,
+        currentStock: true, costPrice: true, salePrice: true, minStock: true,
+        unit: true, category: true, expiryDate: true,
+      },
+    }),
+    prisma.stockBatch.findMany({ where: { remaining: { gt: 0 } }, select: { productId: true, expiryDate: true } }),
+  ]);
+
+  // Validades dos lotes com saldo, por produto — decidem se a validade da linha
+  // pode ser aplicada ao produto inteiro (mesma regra da tela de produto).
+  const openExpiries = new Map();
+  for (const batch of openBatches) {
+    if (!openExpiries.has(batch.productId)) openExpiries.set(batch.productId, []);
+    openExpiries.get(batch.productId).push(batch.expiryDate);
+  }
 
   const byBarcode = new Map();
   const byName = new Map();
@@ -172,6 +184,15 @@ async function analyze({ rows, mapping, options }) {
         item.stockDelta = delta;
         item.resultingStock = resulting;
       }
+
+      // A validade vai para o lote novo quando a linha soma ao saldo; senão segue a
+      // regra da tela de produto e, quando não dá para aplicar, só avisa.
+      if (values.expiryDate !== undefined && !(item.stockDelta > 0)) {
+        const change = expiryChange(match.expiryDate, openExpiries.get(match.id) ?? [], toStoredDate(values.expiryDate));
+        if (change === 'apply') item.applyExpiry = true;
+        else if (change === 'no-stock') item.warnings.push('Produto sem estoque: validade não aplicada (ela é registrada junto com uma entrada).');
+        else if (change === 'mixed') item.warnings.push('Os lotes deste produto vencem em datas diferentes: validade não aplicada (corrija lote a lote).');
+      }
       return item;
     }
 
@@ -191,6 +212,9 @@ async function analyze({ rows, mapping, options }) {
 
     item.action = 'create';
     item.resultingStock = values.stock ?? 0;
+    if (values.expiryDate && !(values.stock > 0)) {
+      item.warnings.push('Sem estoque na linha: a validade só é registrada junto com estoque.');
+    }
     return item;
   });
 
@@ -290,21 +314,16 @@ router.post('/products/commit', validate(gridSchema), async (req, res) => {
               costPrice: decimal(values.costPrice ?? 0, 2),
               salePrice: decimal(values.salePrice, 2),
               minStock: decimal(values.minStock ?? 0, 3),
-              currentStock: decimal(initialStock, 3),
-              expiryDate: values.expiryDate ? new Date(`${values.expiryDate}T00:00:00Z`) : null,
             },
           });
           if (initialStock > 0) {
-            await tx.stockMovement.create({
-              data: {
-                productId: created.id,
-                type: 'ENTRY',
-                quantity: decimal(initialStock, 3),
-                previousStock: '0',
-                newStock: decimal(initialStock, 3),
-                reason: `${IMPORT_REASON} (estoque inicial)`,
-                userId,
-              },
+            await moveStock(tx, {
+              productId: created.id,
+              quantity: initialStock,
+              type: 'ENTRY',
+              reason: `${IMPORT_REASON} (estoque inicial)`,
+              userId,
+              expiryDate: toStoredDate(values.expiryDate),
             });
           }
         });
@@ -321,24 +340,23 @@ router.post('/products/commit', validate(gridSchema), async (req, res) => {
               ...(values.costPrice !== undefined && { costPrice: decimal(values.costPrice, 2) }),
               ...(values.salePrice !== undefined && { salePrice: decimal(values.salePrice, 2) }),
               ...(values.minStock !== undefined && { minStock: decimal(values.minStock, 3) }),
-              ...(values.expiryDate !== undefined && { expiryDate: new Date(`${values.expiryDate}T00:00:00Z`) }),
             },
           });
 
+          // Aumento de saldo vira um lote com a validade da linha; redução baixa
+          // pela ordem de perda do PVPS.
           if (item.stockDelta) {
-            const { previousStock, newStock } = await applyStockDelta(tx, item.productId, item.stockDelta, { requireActive: false });
-            await tx.stockMovement.create({
-              data: {
-                productId: item.productId,
-                type: stockMode === 'add' ? 'ENTRY' : 'ADJUSTMENT',
-                quantity: decimal(item.stockDelta, 3),
-                previousStock,
-                newStock,
-                reason: stockMode === 'add' ? `${IMPORT_REASON} (entrada)` : `${IMPORT_REASON} (acerto de saldo)`,
-                userId,
-              },
+            await moveStock(tx, {
+              productId: item.productId,
+              quantity: item.stockDelta,
+              type: stockMode === 'add' ? 'ENTRY' : 'ADJUSTMENT',
+              reason: stockMode === 'add' ? `${IMPORT_REASON} (entrada)` : `${IMPORT_REASON} (acerto de saldo)`,
+              userId,
+              expiryDate: toStoredDate(values.expiryDate),
+              requireActive: false,
             });
           }
+          if (item.applyExpiry) await setOpenBatchesExpiry(tx, item.productId, toStoredDate(values.expiryDate));
         });
         result.updated += 1;
       }

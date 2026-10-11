@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const config = require('../config');
 const prisma = require('../db');
-const { getStockForecast, splitForecastAlerts } = require('../forecast');
+const { getStockForecast, splitForecastAlerts } = require('../services/forecast');
 
 function buildTransport() {
   if (!config.smtp.host) return null;
