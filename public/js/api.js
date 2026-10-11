@@ -17,7 +17,7 @@ async function apiRequest(path, { method = 'GET', body } = {}) {
   });
 
   const isJson = res.headers.get('content-type')?.includes('application/json');
-  const data = isJson ? await res.json() : null;
+  const data = isJson ? await res.json() : await res.text(); // texto: ex. lista de compras para o WhatsApp
 
   // O status vai junto no erro: quem chama distingue, por exemplo, "nenhum
   // caixa aberto" (404) de uma falha de verdade.

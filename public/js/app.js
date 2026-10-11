@@ -5,11 +5,19 @@ let saleInFlight = false;
 let payMethod = null; // forma de pagamento escolhida para a venda em andamento
 let cashSession = null; // caixa aberto agora, ou null
 let productsPage = 1;
+let productUrgencyFilter = null; // RED | YELLOW | GREEN, ou null para todos
 let movementsPage = 1;
 let cashHistoryPage = 1;
 const LIST_PAGE_SIZE = 20;
 
 const PAYMENT_LABELS = { CASH: 'Dinheiro', PIX: 'Pix', DEBIT_CARD: 'Cartão de débito', CREDIT_CARD: 'Cartão de crédito' };
+
+// Semáforo (regras no servidor): vermelho = agir agora, amarelo = planejar, verde = em ordem.
+const URGENCY_INFO = {
+  RED: { emoji: '🔴', label: 'Vermelho', css: 'red', hint: 'Sem estoque, vencido ou vencendo em até 7 dias' },
+  YELLOW: { emoji: '🟡', label: 'Amarelo', css: 'yellow', hint: 'Estoque no mínimo ou vencendo em 8 a 30 dias' },
+  GREEN: { emoji: '🟢', label: 'Verde', css: 'green', hint: 'Estoque e validade em ordem' },
+};
 
 const content = document.getElementById('content');
 
@@ -50,7 +58,7 @@ function closeModal(backdrop) {
   document.body.style.overflow = '';
 }
 
-function switchTab(name) {
+function switchTab(name, options) {
   currentTab = name;
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   const renderers = {
@@ -58,12 +66,13 @@ function switchTab(name) {
     vendas: renderVendas,
     caixa: renderCaixa,
     produtos: renderProdutos,
+    compras: renderCompras,
     estoque: renderEstoque,
     importar: renderImportar,
     relatorios: renderRelatorios,
     usuarios: renderUsuarios,
   };
-  (renderers[name] || renderDashboard)();
+  (renderers[name] || renderDashboard)(options);
 }
 
 document.getElementById('tabs').addEventListener('click', (e) => {
@@ -104,7 +113,23 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 // ---------- Dashboard ----------
 async function renderDashboard() {
   activeTemplate('dashboard');
-  const data = await api.get('/dashboard');
+  document.getElementById('dash-shopping-btn').addEventListener('click', () => switchTab('compras'));
+  const [data, counts] = await Promise.all([api.get('/dashboard'), urgencyCounts()]);
+
+  // Contagem de cada cor do semáforo; tocar num cartão abre os produtos filtrados.
+  const summary = document.getElementById('semaforo-summary');
+  Object.entries(URGENCY_INFO).forEach(([level, info]) => {
+    summary.appendChild(el('button', {
+      type: 'button',
+      class: `semaforo-card ${info.css}`,
+      'aria-label': `${info.label}: ${counts[level]} produto(s). ${info.hint}. Ver produtos.`,
+      onclick: () => switchTab('produtos', { urgency: level }),
+    }, [
+      el('span', { class: 'semaforo-count' }, `${info.emoji} ${counts[level]}`),
+      el('span', { class: 'semaforo-label' }, info.label),
+      el('span', { class: 'semaforo-hint' }, info.hint),
+    ]));
+  });
 
   const tbLow = document.getElementById('tb-low-stock');
   data.lowStock.forEach((p) => {
@@ -618,15 +643,25 @@ async function loadCashHistory() {
 }
 
 // ---------- Produtos ----------
-async function renderProdutos() {
+async function renderProdutos(options) {
   activeTemplate('produtos');
   productsPage = 1;
+  productUrgencyFilter = options?.urgency || null; // vindo de um cartão do painel
+  paintUrgencyFilter();
   await loadProducts();
 
   document.getElementById('product-search').addEventListener('input', debounce(() => {
     productsPage = 1;
     loadProducts();
   }, 250));
+  document.querySelector('.urgency-filter').addEventListener('click', (e) => {
+    const chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    productUrgencyFilter = chip.dataset.urgency || null;
+    productsPage = 1;
+    paintUrgencyFilter();
+    loadProducts();
+  });
   const newBtn = document.getElementById('new-product-btn');
   if (newBtn) newBtn.addEventListener('click', () => openProductForm(null));
 }
@@ -662,10 +697,50 @@ function renderPager(containerId, { page, pageSize, totalCount }, onPage) {
   box.appendChild(actions);
 }
 
+function paintUrgencyFilter() {
+  document.querySelectorAll('.urgency-filter .filter-chip').forEach((chip) => {
+    chip.setAttribute('aria-pressed', String((chip.dataset.urgency || null) === productUrgencyFilter));
+  });
+}
+
+// Quantos produtos ativos há em cada cor — o filtro da API já devolve o total.
+async function urgencyCounts() {
+  const levels = Object.keys(URGENCY_INFO);
+  const pages = await Promise.all(levels.map((level) => api.get(`/products?urgency=${level}&page=1&pageSize=1`)));
+  return Object.fromEntries(levels.map((level, i) => [level, pages[i].totalCount]));
+}
+
+function urgencyReasons(p) {
+  const d = p.daysToExpiry;
+  const text = {
+    OUT_OF_STOCK: 'Sem estoque',
+    EXPIRED: d === -1 ? 'Venceu ontem' : `Vencido há ${-d} dias`,
+    EXPIRES_SOON: d === 0 ? 'Vence hoje' : d === 1 ? 'Vence amanhã' : `Vence em ${d} dias`,
+    EXPIRING: `Vence em ${d} dias`,
+    LOW_STOCK: p.currentStock < p.minStock ? 'Abaixo do estoque mínimo' : 'No estoque mínimo',
+  };
+  return p.urgencyReasons.map((reason) => text[reason] || reason);
+}
+
+// Selo com a cor e, logo abaixo, os motivos — visíveis também no toque (tablet e
+// celular não mostram tooltip); o title repete os motivos para quem usa mouse.
+function urgencyCell(p) {
+  // Produto desativado está fora das vendas: uma cor ali seria alarme falso.
+  if (!p.active) return el('td', {}, el('span', { class: 'badge semaforo inactive', title: 'Desativado: fora do semáforo' }, 'Inativo'));
+  const info = URGENCY_INFO[p.urgency];
+  const reasons = urgencyReasons(p);
+  return el('td', {}, [
+    el('span', { class: `badge semaforo ${info.css}`, title: reasons.join(' · ') || info.hint }, `${info.emoji} ${info.label}`),
+    reasons.length ? el('span', { class: 'urgency-reasons' }, reasons.join(' · ')) : null,
+  ]);
+}
+
 async function loadProducts() {
   const term = document.getElementById('product-search')?.value.trim() || '';
-  const includeInactive = currentUser.role === 'ADMIN' ? '&includeInactive=true' : '';
-  const data = await api.get(`/products?query=${encodeURIComponent(term)}${includeInactive}&page=${productsPage}&pageSize=${LIST_PAGE_SIZE}`);
+  // Filtrando por cor, só os ativos — a mesma conta dos cartões do painel.
+  const includeInactive = currentUser.role === 'ADMIN' && !productUrgencyFilter ? '&includeInactive=true' : '';
+  const urgency = productUrgencyFilter ? `&urgency=${productUrgencyFilter}` : '';
+  const data = await api.get(`/products?query=${encodeURIComponent(term)}${includeInactive}${urgency}&page=${productsPage}&pageSize=${LIST_PAGE_SIZE}`);
   const products = data.products;
   const body = document.getElementById('products-list');
   body.innerHTML = '';
@@ -676,6 +751,7 @@ async function loadProducts() {
       : el('span', {}, `${p.currentStock} ${p.unit}`);
 
     const cells = [
+      urgencyCell(p),
       el('td', {}, p.name + (p.active ? '' : ' (inativo)')),
       el('td', {}, p.category || '—'),
       el('td', {}, stockBadge),
@@ -695,7 +771,7 @@ async function loadProducts() {
     body.appendChild(el('tr', {}, cells));
   });
 
-  if (products.length === 0) body.appendChild(el('tr', {}, el('td', { colspan: '8', class: 'muted' }, 'Nenhum produto encontrado.')));
+  if (products.length === 0) body.appendChild(el('tr', {}, el('td', { colspan: '9', class: 'muted' }, 'Nenhum produto encontrado.')));
   renderPager('products-pager', data, (nextPage) => {
     productsPage = nextPage;
     loadProducts();
@@ -774,6 +850,66 @@ function openProductForm(product) {
       msg.hidden = false;
     }
   });
+}
+
+// ---------- Compras ----------
+async function renderCompras() {
+  activeTemplate('compras');
+  const [list, text] = await Promise.all([api.get('/shopping-list'), api.get('/shopping-list?format=text')]);
+
+  const body = document.getElementById('shop-list');
+  list.items.forEach((item) => {
+    body.appendChild(el('tr', {}, [
+      el('td', {}, item.name),
+      el('td', {}, item.category || 'Sem categoria'),
+      el('td', {}, el('span', { class: `badge ${item.currentStock <= 0 ? 'bad' : 'warn'}` }, `${item.currentStock} ${item.unit}`)),
+      el('td', {}, `${item.minStock} ${item.unit}`),
+      el('td', {}, item.avgDailySales > 0 ? `${item.avgDailySales} ${item.unit}` : '—'),
+      el('td', {}, item.daysUntilStockout === null ? '—' : `${item.daysUntilStockout} dia(s)`),
+    ]));
+  });
+  if (list.items.length === 0) body.appendChild(el('tr', {}, el('td', { colspan: '6', class: 'muted' }, 'Nada para comprar: nenhum produto está no estoque mínimo.')));
+
+  document.getElementById('shop-text').value = text;
+  const copyBtn = document.getElementById('shop-copy-btn');
+  const waLink = document.getElementById('shop-wa-link');
+  // shortcut: a lista inteira vai na URL; com centenas de itens o WhatsApp pode cortar — aí, use "Copiar".
+  waLink.href = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  copyBtn.disabled = list.items.length === 0;
+  waLink.hidden = list.items.length === 0;
+
+  copyBtn.addEventListener('click', async () => {
+    const msg = document.getElementById('shop-msg');
+    const error = document.getElementById('shop-error');
+    msg.hidden = true;
+    error.hidden = true;
+    if (await copyText(text)) {
+      msg.textContent = `Lista copiada (${list.totalItems} produto(s)). Agora é só colar na conversa do WhatsApp.`;
+      msg.hidden = false;
+      setTimeout(() => { msg.hidden = true; }, 6000);
+    } else {
+      error.textContent = 'Não foi possível copiar automaticamente: selecione o texto abaixo e copie.';
+      error.hidden = false;
+    }
+  });
+}
+
+// A API de área de transferência só existe em HTTPS ou localhost; acessando pelo
+// IP da rede local (http://192.168…), cai no método antigo de copiar.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = el('textarea', { readonly: '' }, text);
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  }
 }
 
 // ---------- Estoque ----------

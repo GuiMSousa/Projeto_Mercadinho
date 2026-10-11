@@ -14,6 +14,7 @@
       <button data-tab="vendas" class="tab-btn">Vendas</button>
       <button data-tab="caixa" class="tab-btn">Caixa</button>
       <button data-tab="produtos" class="tab-btn">Produtos</button>
+      <button data-tab="compras" class="tab-btn">Compras</button>
       <button data-tab="estoque" class="tab-btn" data-admin-only>Estoque</button>
       <button data-tab="importar" class="tab-btn" data-admin-only>Importar</button>
       <button data-tab="relatorios" class="tab-btn" data-admin-only>Relatórios</button>
@@ -32,6 +33,7 @@
   <template id="tpl-dashboard">
     <section>
       <h2>Painel</h2>
+      <div id="semaforo-summary" class="semaforo-summary" aria-label="Semáforo dos produtos"></div>
       <div id="admin-summary" class="grid-cards" hidden>
         <div class="card stat"><span class="stat-label">Vendas hoje</span><span id="stat-today" class="stat-value">—</span></div>
         <div class="card stat"><span class="stat-label">Vendas no mês</span><span id="stat-month" class="stat-value">—</span></div>
@@ -39,7 +41,10 @@
 
       <div class="grid-2">
         <div class="card">
-          <h3>Estoque baixo</h3>
+          <div class="section-head">
+            <h3>Estoque baixo</h3>
+            <button type="button" id="dash-shopping-btn" class="small secondary">Abrir lista de compras</button>
+          </div>
           <div class="table-wrap"><table class="table"><thead><tr><th>Produto</th><th>Estoque</th><th>Mínimo</th></tr></thead><tbody id="tb-low-stock"></tbody></table></div>
         </div>
         <div class="card">
@@ -126,12 +131,41 @@
         <button id="new-product-btn" data-admin-only>+ Novo produto</button>
       </div>
       <input id="product-search" type="text" placeholder="Buscar produtos..." class="full" aria-label="Buscar produtos" />
+      <div class="urgency-filter" role="group" aria-label="Filtrar por situação no semáforo">
+        <button type="button" class="filter-chip" data-urgency="" aria-pressed="true">Todos</button>
+        <button type="button" class="filter-chip red" data-urgency="RED" aria-pressed="false">🔴 Vermelho</button>
+        <button type="button" class="filter-chip yellow" data-urgency="YELLOW" aria-pressed="false">🟡 Amarelo</button>
+        <button type="button" class="filter-chip green" data-urgency="GREEN" aria-pressed="false">🟢 Verde</button>
+      </div>
       <div class="card">
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>Nome</th><th>Categoria</th><th>Estoque</th><th>Mín.</th><th>Preço</th><th data-admin-only>Custo</th><th>Validade</th><th></th></tr></thead>
+          <thead><tr><th>Situação</th><th>Nome</th><th>Categoria</th><th>Estoque</th><th>Mín.</th><th>Preço</th><th data-admin-only>Custo</th><th>Validade</th><th></th></tr></thead>
           <tbody id="products-list"></tbody>
         </table></div>
         <div id="products-pager" class="pager" hidden></div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-compras">
+    <section>
+      <h2>Lista de compras</h2>
+      <p class="muted">Produtos ativos com estoque igual ou abaixo do mínimo cadastrado, por categoria.</p>
+      <div class="card">
+        <div class="share-actions">
+          <button type="button" id="shop-copy-btn">Copiar para WhatsApp</button>
+          <a id="shop-wa-link" class="button-link whatsapp" target="_blank" rel="noopener">Abrir no WhatsApp</a>
+        </div>
+        <p id="shop-msg" class="success" role="status" hidden></p>
+        <p id="shop-error" class="error" hidden></p>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Produto</th><th>Categoria</th><th>Estoque</th><th>Mínimo</th><th>Vende por dia</th><th>Acaba em</th></tr></thead>
+          <tbody id="shop-list"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <h3>Mensagem que será enviada</h3>
+        <textarea id="shop-text" rows="12" readonly aria-label="Texto da lista de compras para o WhatsApp"></textarea>
       </div>
     </section>
   </template>
