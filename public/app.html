@@ -12,12 +12,14 @@
     <nav id="tabs" class="tabs">
       <button data-tab="dashboard" class="tab-btn active">Painel</button>
       <button data-tab="vendas" class="tab-btn">Vendas</button>
+      <button data-tab="caixa" class="tab-btn">Caixa</button>
       <button data-tab="produtos" class="tab-btn">Produtos</button>
       <button data-tab="estoque" class="tab-btn" data-admin-only>Estoque</button>
       <button data-tab="importar" class="tab-btn" data-admin-only>Importar</button>
       <button data-tab="relatorios" class="tab-btn" data-admin-only>Relatórios</button>
       <button data-tab="usuarios" class="tab-btn" data-admin-only>Usuários</button>
     </nav>
+    <button id="cash-chip" type="button" class="cash-chip" hidden></button>
     <div class="user-box">
       <span id="user-avatar" class="user-avatar" aria-hidden="true"></span>
       <span id="user-name"></span>
@@ -61,10 +63,14 @@
 
   <template id="tpl-vendas">
     <section>
+      <div id="sale-cash-warning" class="banner warn" hidden>
+        <span>Caixa fechado: as vendas não vão entrar em nenhum fechamento de caixa.</span>
+        <button type="button" id="sale-open-cash-btn" class="btn-xl">Abrir caixa</button>
+      </div>
       <h2>Nova venda</h2>
-      <div class="card">
+      <div class="card op">
         <div class="sale-picker">
-          <input id="sale-search" type="text" placeholder="Buscar produto por nome ou código de barras..." aria-label="Buscar produto para adicionar à venda" />
+          <input id="sale-search" class="field-xl" type="text" placeholder="Buscar produto por nome ou código de barras..." aria-label="Buscar produto para adicionar à venda" />
           <div id="sale-results" class="search-results"></div>
         </div>
         <div class="table-wrap"><table class="table">
@@ -72,14 +78,41 @@
           <tbody id="cart-body"></tbody>
         </table></div>
         <div class="cart-total">Total: <strong id="cart-total">R$ 0,00</strong></div>
-        <button id="confirm-sale-btn" disabled>Confirmar venda</button>
+
+        <fieldset class="pay-methods">
+          <legend>Forma de pagamento</legend>
+          <div class="pay-grid">
+            <button type="button" class="pay-btn" data-method="CASH" aria-pressed="false">Dinheiro</button>
+            <button type="button" class="pay-btn" data-method="PIX" aria-pressed="false">Pix</button>
+            <button type="button" class="pay-btn" data-method="DEBIT_CARD" aria-pressed="false">Débito</button>
+            <button type="button" class="pay-btn" data-method="CREDIT_CARD" aria-pressed="false">Crédito</button>
+          </div>
+        </fieldset>
+
+        <div id="cash-box" class="cash-box" hidden>
+          <label for="cash-received">Valor entregue pelo cliente (R$)</label>
+          <input id="cash-received" class="field-xl" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" />
+          <div class="quick-cash" id="cash-received-quick">
+            <button type="button" data-cash="exact">Valor exato</button>
+            <button type="button" data-cash="5">+ R$ 5</button>
+            <button type="button" data-cash="10">+ R$ 10</button>
+            <button type="button" data-cash="20">+ R$ 20</button>
+            <button type="button" data-cash="50">+ R$ 50</button>
+            <button type="button" data-cash="100">+ R$ 100</button>
+            <button type="button" data-cash="clear" class="quiet">Limpar</button>
+          </div>
+          <p id="cash-change" class="change-line" aria-live="polite"></p>
+        </div>
+
+        <button id="confirm-sale-btn" class="btn-xl btn-wide" disabled>Confirmar venda</button>
+        <p id="sale-hint" class="muted" aria-live="polite"></p>
         <p id="sale-msg" class="error" hidden></p>
       </div>
 
       <h2>Vendas recentes</h2>
       <div class="card">
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>Data</th><th>Vendedor</th><th>Itens</th><th>Total</th><th></th></tr></thead>
+          <thead><tr><th>Data</th><th>Vendedor</th><th>Itens</th><th>Pagamento</th><th>Total</th><th></th></tr></thead>
           <tbody id="sales-list"></tbody>
         </table></div>
       </div>
@@ -129,23 +162,27 @@
     <section>
       <h2>Estoque</h2>
       <div class="grid-2">
-        <form id="entry-form" class="card">
+        <form id="entry-form" class="card op">
           <h3>Entrada de mercadoria (compra)</h3>
           <label for="entry-product">Produto</label>
-          <select id="entry-product" required></select>
-          <label for="entry-qty">Quantidade</label><input id="entry-qty" type="number" step="0.001" min="0.001" required />
-          <label for="entry-reason">Observação</label><input id="entry-reason" maxlength="255" />
-          <button type="submit">Registrar entrada</button>
+          <select id="entry-product" class="field-xl" required></select>
+          <label for="entry-qty">Quantidade</label><input id="entry-qty" class="field-xl" type="number" step="0.001" min="0.001" required />
+          <label for="entry-expiry">Data de validade do lote</label>
+          <input id="entry-expiry" class="field-xl" type="date" required />
+          <label class="check"><input id="entry-no-expiry" type="checkbox" /> Produto sem validade (limpeza, higiene...)</label>
+          <label for="entry-reason">Observação</label><input id="entry-reason" class="field-xl" maxlength="255" />
+          <button type="submit" class="btn-xl btn-wide">Registrar entrada</button>
+          <p id="entry-ok" class="success" hidden></p>
           <p id="entry-msg" class="error" hidden></p>
         </form>
 
-        <form id="adjustment-form" class="card">
+        <form id="adjustment-form" class="card op">
           <h3>Ajuste / perda (produto vencido, quebra etc.)</h3>
           <label for="adjustment-product">Produto</label>
-          <select id="adjustment-product" required></select>
-          <label for="adjustment-qty">Quantidade a remover</label><input id="adjustment-qty" type="number" step="0.001" min="0.001" required />
-          <label for="adjustment-reason">Motivo</label><input id="adjustment-reason" maxlength="255" required placeholder="Ex: produto vencido" />
-          <button type="submit">Registrar perda/ajuste</button>
+          <select id="adjustment-product" class="field-xl" required></select>
+          <label for="adjustment-qty">Quantidade a remover</label><input id="adjustment-qty" class="field-xl" type="number" step="0.001" min="0.001" required />
+          <label for="adjustment-reason">Motivo</label><input id="adjustment-reason" class="field-xl" maxlength="255" required placeholder="Ex: produto vencido" />
+          <button type="submit" class="btn-xl btn-wide">Registrar perda/ajuste</button>
           <p id="adjustment-msg" class="error" hidden></p>
         </form>
       </div>
@@ -170,10 +207,82 @@
         <tbody id="receipt-items"></tbody>
       </table></div>
       <p class="cart-total">Total: <strong id="receipt-total">R$ 0,00</strong></p>
+      <p id="receipt-payment" class="receipt-payment"></p>
       <div class="form-actions no-print">
         <button type="button" id="receipt-print-btn">Imprimir</button>
         <button type="button" id="receipt-close-btn" class="secondary">Nova venda</button>
       </div>
+    </div>
+  </template>
+
+  <template id="tpl-caixa">
+    <section>
+      <h2>Caixa</h2>
+      <div class="card op">
+        <p id="cash-state" class="cash-state"></p>
+        <p id="cash-state-meta" class="muted"></p>
+        <div id="cash-live" class="grid-cards cash-live" hidden></div>
+        <div class="form-actions">
+          <button type="button" id="cash-open-btn" class="btn-xl" hidden>Abrir caixa</button>
+          <button type="button" id="cash-close-btn" class="btn-xl danger" hidden>Fechar caixa</button>
+        </div>
+      </div>
+
+      <div id="cash-history-section" hidden>
+        <h2>Histórico e conciliação</h2>
+        <div class="card">
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Abertura</th><th>Fechamento</th><th>Fundo</th><th>Esperado</th><th>Contado</th><th>Diferença</th><th>Vendas</th><th></th></tr></thead>
+            <tbody id="cash-history"></tbody>
+          </table></div>
+          <div id="cash-pager" class="pager" hidden></div>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-cash-open">
+    <form id="cash-open-form" class="card op">
+      <h3>Abrir o caixa</h3>
+      <p class="muted">Conte o dinheiro de troco que está na gaveta antes de começar as vendas.</p>
+      <label for="cash-opening">Fundo de troco (R$)</label>
+      <input id="cash-opening" class="field-xl" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" required />
+      <div class="quick-cash" id="cash-opening-quick">
+        <button type="button" data-cash="10">+ R$ 10</button>
+        <button type="button" data-cash="20">+ R$ 20</button>
+        <button type="button" data-cash="50">+ R$ 50</button>
+        <button type="button" data-cash="100">+ R$ 100</button>
+        <button type="button" data-cash="clear" class="quiet">Limpar</button>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-xl">Abrir caixa</button>
+        <button type="button" id="cash-open-later" class="btn-xl secondary">Agora não</button>
+      </div>
+      <p id="cash-open-msg" class="error" hidden></p>
+    </form>
+  </template>
+
+  <template id="tpl-cash-close">
+    <form id="cash-close-form" class="card op">
+      <h3>Fechar o caixa</h3>
+      <p class="muted">Conte todo o dinheiro da gaveta, inclusive o fundo de troco, e informe o total. Pix e cartões não entram nessa contagem.</p>
+      <label for="cash-counted">Dinheiro contado na gaveta (R$)</label>
+      <input id="cash-counted" class="field-xl" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" required />
+      <label for="cash-notes">Observações (opcional)</label>
+      <textarea id="cash-notes" class="field-xl" rows="2" maxlength="500"></textarea>
+      <div class="form-actions">
+        <button type="submit" class="btn-xl danger">Fechar caixa</button>
+        <button type="button" id="cash-close-cancel" class="btn-xl secondary">Cancelar</button>
+      </div>
+      <p id="cash-close-msg" class="error" hidden></p>
+    </form>
+  </template>
+
+  <template id="tpl-cash-summary">
+    <div class="card op">
+      <h3 id="cash-summary-title">Caixa fechado</h3>
+      <div id="cash-summary-body"></div>
+      <button type="button" id="cash-summary-ok" class="btn-xl btn-wide">OK</button>
     </div>
   </template>
 

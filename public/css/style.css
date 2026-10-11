@@ -281,7 +281,7 @@ button.small { padding: 6px 12px; font-size: 0.8125rem; margin: 0; box-shadow: n
 
 .form-actions { display: flex; gap: 8px; margin-top: 16px; }
 
-.badge { display: inline-block; padding: 3px 10px; border-radius: var(--radius-pill); font-size: 0.75rem; font-weight: 600; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: var(--radius-pill); font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.bad { background: var(--danger-soft); color: var(--danger); }
 .badge.ok { background: var(--ok-soft); color: var(--ok); }
@@ -368,3 +368,98 @@ tr.row-skip td { color: var(--text-muted); }
 
 [data-admin-only] { display: none; }
 body.role-admin [data-admin-only] { display: revert; }
+
+/* Sem isto, um elemento com display: flex/grid ignora o atributo hidden. */
+[hidden] { display: none !important; }
+
+.success { color: var(--ok); font-size: 0.875rem; font-weight: 600; margin-top: 8px; }
+
+/* ---------- Telas do balcão (vendas, caixa, entrada de mercadoria) ----------
+   Pensadas para o dono e para uso com o dedo: texto de no mínimo 16pt e botões
+   de no mínimo 60px de altura. */
+.op, .op label, .op input, .op select, .op textarea, .op legend,
+.op .table, .op .table th, .op .muted, .op .error, .op .success, .op .stat-label { font-size: 16pt; }
+.op h3 { font-size: 20pt; }
+.op label { color: var(--text); margin-top: 18px; }
+.op .table th { text-transform: none; letter-spacing: 0; }
+.op .stat-value { font-size: 24pt; }
+.op p.muted:empty { display: none; }
+.op .cart-total { font-size: 22pt; }
+.op .table input { min-height: 56px; max-width: 140px; }
+.op .small { min-height: 60px; padding: 8px 18px; font-size: 16pt; }
+.op .search-results div { min-height: 60px; padding: 14px 16px; font-size: 16pt; }
+
+.btn-xl { min-height: 60px; padding: 12px 28px; font-size: 16pt; }
+.btn-wide { width: 100%; }
+.field-xl { min-height: 60px; padding: 12px 16px; font-size: 16pt; }
+textarea.field-xl { min-height: 100px; }
+
+.pay-methods { border: 0; padding: 0; margin: 20px 0 0; min-width: 0; }
+.pay-methods legend { padding: 0; margin-bottom: 10px; font-weight: 700; }
+.pay-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.pay-btn {
+  min-height: 72px;
+  margin: 0;
+  font-size: 18pt;
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--border);
+  box-shadow: none;
+}
+.pay-btn:hover { background: var(--surface-hover); border-color: #94a3b8; }
+.pay-btn[aria-pressed="true"] { background: var(--primary); border-color: var(--primary-hover); color: #fff; }
+
+.cash-box { margin-top: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-hover); }
+.cash-box label { margin-top: 0; }
+.quick-cash { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.quick-cash button {
+  min-height: 60px;
+  min-width: 110px;
+  margin: 0;
+  font-size: 16pt;
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--border);
+  box-shadow: none;
+}
+.quick-cash button:hover { background: var(--primary-soft); border-color: var(--primary); }
+.quick-cash button.quiet { color: var(--text-muted); }
+.change-line { margin: 14px 0 0; font-size: 24pt; font-weight: 800; }
+.change-line:empty { display: none; }
+.change-line.ok { color: var(--primary-hover); }
+.change-line.bad { color: var(--danger); }
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  font-size: 16pt;
+  font-weight: 600;
+}
+.banner.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid #fcd34d; }
+.banner button { margin: 0; }
+
+.cash-chip { margin: 0; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 1rem; font-weight: 700; box-shadow: none; }
+.cash-chip::before { content: "●"; margin-right: 8px; }
+.cash-chip.open, .cash-chip.open:hover { background: var(--ok-soft); color: var(--ok); }
+.cash-chip.closed, .cash-chip.closed:hover { background: var(--danger-soft); color: var(--danger); }
+.cash-state { margin: 0 0 4px; font-size: 24pt; font-weight: 800; }
+.cash-state.open { color: var(--primary-hover); }
+.cash-state.closed { color: var(--danger); }
+.cash-live { margin-top: 16px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.op .badge { padding: 4px 14px; font-size: 16pt; }
+
+.modal-backdrop .card.op { max-width: 640px; }
+.summary-list { display: grid; grid-template-columns: auto 1fr; gap: 10px 20px; margin: 0 0 8px; }
+.summary-list dt { color: var(--text-muted); }
+.summary-list dd { margin: 0; font-weight: 700; text-align: right; }
+.summary-lead { font-size: 20pt; font-weight: 700; }
+.receipt-payment { margin: 4px 0 0; font-weight: 600; }
+
+.check { display: flex; align-items: center; gap: 12px; color: var(--text); font-weight: 500; cursor: pointer; }
+.check input { flex: none; width: 28px; height: 28px; }

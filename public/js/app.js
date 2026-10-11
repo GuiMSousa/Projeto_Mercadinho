@@ -1,9 +1,15 @@
 let currentUser = null;
+let currentTab = 'dashboard';
 let cart = []; // { productId, name, unit, price, quantity }
 let saleInFlight = false;
+let payMethod = null; // forma de pagamento escolhida para a venda em andamento
+let cashSession = null; // caixa aberto agora, ou null
 let productsPage = 1;
 let movementsPage = 1;
+let cashHistoryPage = 1;
 const LIST_PAGE_SIZE = 20;
+
+const PAYMENT_LABELS = { CASH: 'Dinheiro', PIX: 'Pix', DEBIT_CARD: 'Cartão de débito', CREDIT_CARD: 'Cartão de crédito' };
 
 const content = document.getElementById('content');
 
@@ -45,10 +51,12 @@ function closeModal(backdrop) {
 }
 
 function switchTab(name) {
+  currentTab = name;
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   const renderers = {
     dashboard: renderDashboard,
     vendas: renderVendas,
+    caixa: renderCaixa,
     produtos: renderProdutos,
     estoque: renderEstoque,
     importar: renderImportar,
@@ -80,7 +88,17 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   document.getElementById('user-name').textContent = `${currentUser.name} (${currentUser.role === 'ADMIN' ? 'admin' : 'caixa'})`;
   document.getElementById('user-avatar').textContent = currentUser.name.trim().charAt(0).toUpperCase();
   document.body.classList.toggle('role-admin', currentUser.role === 'ADMIN');
+
+  let cashKnown = false;
+  try {
+    await refreshCashStatus();
+    cashKnown = true;
+  } catch {
+    // Sem o status do caixa o resto da tela segue funcionando.
+  }
   switchTab('dashboard');
+  // O dia começa abrindo o caixa: venda sem caixa aberto fica fora da conciliação.
+  if (cashKnown && !cashSession) openCashOpenModal();
 })();
 
 // ---------- Dashboard ----------
@@ -137,6 +155,7 @@ async function renderDashboard() {
 async function renderVendas() {
   activeTemplate('vendas');
   cart = [];
+  payMethod = null;
   renderCart();
 
   const searchInput = document.getElementById('sale-search');
@@ -166,7 +185,94 @@ async function renderVendas() {
 
   document.getElementById('confirm-sale-btn').addEventListener('click', confirmSale);
 
+  document.querySelector('.pay-grid').addEventListener('click', (e) => {
+    const btn = e.target.closest('.pay-btn');
+    if (btn) selectPayMethod(btn.dataset.method);
+  });
+  const received = document.getElementById('cash-received');
+  received.addEventListener('input', updateCheckout);
+  wireQuickCash(document.getElementById('cash-received-quick'), received, cartTotalCents);
+  updateCheckout();
+
+  document.getElementById('sale-open-cash-btn').addEventListener('click', () => openCashOpenModal());
+  paintSaleCashWarning();
+  refreshCashStatus().then(paintSaleCashWarning).catch(() => {});
+
   await loadRecentSales();
+}
+
+function selectPayMethod(method) {
+  payMethod = method;
+  document.querySelectorAll('.pay-btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.method === method)));
+  document.getElementById('cash-box').hidden = method !== 'CASH';
+  if (method === 'CASH') document.getElementById('cash-received').focus();
+  updateCheckout();
+}
+
+function resetPayment() {
+  payMethod = null;
+  document.querySelectorAll('.pay-btn').forEach((b) => b.setAttribute('aria-pressed', 'false'));
+  const received = document.getElementById('cash-received');
+  if (received) received.value = '';
+  const box = document.getElementById('cash-box');
+  if (box) box.hidden = true;
+}
+
+const cartTotalCents = () => Math.round(cart.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100);
+const centsToInput = (cents) => (cents / 100).toFixed(2).replace('.', ',');
+
+// Botões de cédula somam ao valor (o cliente entrega uma de 50 e uma de 20);
+// "Valor exato" e "Limpar" substituem. Menos digitação no balcão.
+function wireQuickCash(container, input, exactCents) {
+  container.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-cash]');
+    if (!btn) return;
+    const action = btn.dataset.cash;
+    let cents = null;
+    if (action === 'exact') cents = exactCents();
+    else if (action !== 'clear') cents = (parseMoneyCents(input.value) ?? 0) + Number(action) * 100;
+    input.value = cents === null ? '' : centsToInput(cents);
+    input.dispatchEvent(new Event('input'));
+  });
+}
+
+// Botão de confirmar e linha de troco, recalculados a cada mudança no
+// carrinho, na forma de pagamento ou no valor entregue. Em dinheiro, não deixa
+// fechar a venda com valor entregue menor que o total.
+function updateCheckout() {
+  const btn = document.getElementById('confirm-sale-btn');
+  if (!btn) return;
+  const changeLine = document.getElementById('cash-change');
+  changeLine.textContent = '';
+  changeLine.className = 'change-line';
+
+  let blocker = '';
+  if (cart.length === 0) blocker = 'Adicione produtos à venda.';
+  else if (!payMethod) blocker = 'Escolha a forma de pagamento.';
+  else if (payMethod === 'CASH') {
+    const text = document.getElementById('cash-received').value;
+    const received = parseMoneyCents(text);
+    const total = cartTotalCents();
+    if (received === null) {
+      blocker = text.trim() ? 'Valor entregue inválido: use números, ex: 50,00.' : 'Informe o valor entregue (ou toque em "Valor exato").';
+    } else if (received < total) {
+      changeLine.textContent = `Faltam ${formatMoney((total - received) / 100)}`;
+      changeLine.classList.add('bad');
+      blocker = 'O valor entregue é menor que o total da venda.';
+    } else {
+      changeLine.textContent = `Troco: ${formatMoney((received - total) / 100)}`;
+      changeLine.classList.add('ok');
+    }
+  }
+
+  btn.disabled = Boolean(blocker) || saleInFlight;
+  btn.textContent = saleInFlight ? 'Registrando…' : 'Confirmar venda';
+  document.getElementById('sale-hint').textContent = saleInFlight ? '' : blocker;
+}
+
+function paintSaleCashWarning() {
+  const banner = document.getElementById('sale-cash-warning');
+  if (banner) banner.hidden = Boolean(cashSession);
 }
 
 function addToCart(product) {
@@ -180,8 +286,8 @@ function addToCart(product) {
 }
 
 function updateCartTotal() {
-  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  document.getElementById('cart-total').textContent = formatMoney(total);
+  document.getElementById('cart-total').textContent = formatMoney(cartTotalCents() / 100);
+  updateCheckout();
 }
 
 function renderCart() {
@@ -216,41 +322,37 @@ function renderCart() {
   });
 
   updateCartTotal();
-  const btn = document.getElementById('confirm-sale-btn');
-  if (btn) {
-    btn.disabled = cart.length === 0 || saleInFlight;
-    btn.textContent = saleInFlight ? 'Registrando…' : 'Confirmar venda';
-  }
 }
 
 async function confirmSale() {
-  if (saleInFlight || cart.length === 0) return;
+  const btn = document.getElementById('confirm-sale-btn');
+  if (saleInFlight || btn.disabled) return;
   const msg = document.getElementById('sale-msg');
   msg.hidden = true;
-  const btn = document.getElementById('confirm-sale-btn');
+  const receivedCents = payMethod === 'CASH' ? parseMoneyCents(document.getElementById('cash-received').value) : null;
   saleInFlight = true;
-  btn.disabled = true;
-  btn.textContent = 'Registrando…';
+  updateCheckout();
   try {
-    const sale = await api.post('/sales', { items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity })) });
+    const sale = await api.post('/sales', {
+      items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+      paymentMethod: payMethod,
+    });
     cart = [];
+    resetPayment();
     renderCart();
     await loadRecentSales();
-    openReceipt(sale);
+    openReceipt(sale, receivedCents);
   } catch (err) {
     msg.textContent = err.message;
     msg.hidden = false;
   } finally {
     saleInFlight = false;
-    const stillThere = document.getElementById('confirm-sale-btn');
-    if (stillThere) {
-      stillThere.disabled = cart.length === 0;
-      stillThere.textContent = 'Confirmar venda';
-    }
+    updateCheckout();
   }
 }
 
-function openReceipt(sale) {
+// O troco não é gravado no servidor: vem do valor entregue informado na tela.
+function openReceipt(sale, receivedCents = null) {
   const modal = openModal('tpl-receipt');
   const when = formatDateTime(sale.createdAt);
   document.getElementById('receipt-meta').textContent = `${when} · ${sale.items.length} item(ns)`;
@@ -265,6 +367,12 @@ function openReceipt(sale) {
     ]));
   });
   document.getElementById('receipt-total').textContent = formatMoney(sale.totalAmount);
+  let payment = `Pagamento: ${PAYMENT_LABELS[sale.paymentMethod] || sale.paymentMethod}`;
+  if (receivedCents !== null) {
+    const change = receivedCents - Math.round(sale.totalAmount * 100);
+    payment += ` · Recebido ${formatMoney(receivedCents / 100)} · ${change >= 0 ? `Troco ${formatMoney(change / 100)}` : `Faltam ${formatMoney(-change / 100)}`}`;
+  }
+  document.getElementById('receipt-payment').textContent = payment;
   document.getElementById('receipt-print-btn').addEventListener('click', () => window.print());
   document.getElementById('receipt-close-btn').addEventListener('click', () => closeModal(modal));
 }
@@ -278,6 +386,7 @@ async function loadRecentSales() {
       el('td', {}, formatDateTime(s.createdAt)),
       el('td', {}, s.seller),
       el('td', {}, String(s.itemCount)),
+      el('td', {}, PAYMENT_LABELS[s.paymentMethod] || s.paymentMethod),
       el('td', {}, formatMoney(s.totalAmount)),
     ];
     if (currentUser.role === 'ADMIN') {
@@ -294,7 +403,218 @@ async function loadRecentSales() {
     }
     body.appendChild(el('tr', {}, cells));
   });
-  if (data.sales.length === 0) body.appendChild(el('tr', {}, el('td', { colspan: '5', class: 'muted' }, 'Nenhuma venda registrada.')));
+  if (data.sales.length === 0) body.appendChild(el('tr', {}, el('td', { colspan: '6', class: 'muted' }, 'Nenhuma venda registrada.')));
+}
+
+// ---------- Caixa ----------
+async function refreshCashStatus() {
+  try {
+    cashSession = await api.get('/cash-sessions/current');
+  } catch (err) {
+    if (err.status !== 404) throw err;
+    cashSession = null;
+  }
+  const chip = document.getElementById('cash-chip');
+  chip.hidden = false;
+  chip.textContent = cashSession ? 'Caixa aberto' : 'Caixa fechado';
+  chip.classList.toggle('open', Boolean(cashSession));
+  chip.classList.toggle('closed', !cashSession);
+  return cashSession;
+}
+
+document.getElementById('cash-chip').addEventListener('click', () => switchTab('caixa'));
+
+// Depois de abrir ou fechar: atualiza o indicador e a tela que estiver aberta,
+// sem recarregar a de vendas (que perderia o carrinho em andamento).
+async function afterCashChange() {
+  await refreshCashStatus();
+  if (currentTab === 'caixa') await renderCaixa();
+  else if (currentTab === 'vendas') paintSaleCashWarning();
+}
+
+async function renderCaixa() {
+  activeTemplate('caixa');
+  await refreshCashStatus();
+  const isAdmin = currentUser.role === 'ADMIN';
+  const state = document.getElementById('cash-state');
+  const openBtn = document.getElementById('cash-open-btn');
+  const closeBtn = document.getElementById('cash-close-btn');
+
+  if (cashSession) {
+    state.textContent = 'Caixa aberto';
+    state.classList.add('open');
+    document.getElementById('cash-state-meta').textContent =
+      `Aberto por ${cashSession.openedBy} em ${formatDateTime(cashSession.openedAt)} · fundo de troco ${formatMoney(cashSession.openingAmount)}`;
+    closeBtn.hidden = false;
+    if (isAdmin) paintCashLive(cashSession);
+  } else {
+    state.textContent = 'Caixa fechado';
+    state.classList.add('closed');
+    document.getElementById('cash-state-meta').textContent = 'Abra o caixa com o fundo de troco antes de começar as vendas.';
+    openBtn.hidden = false;
+  }
+  openBtn.addEventListener('click', () => openCashOpenModal());
+  closeBtn.addEventListener('click', () => openCashCloseModal());
+
+  // Valores e histórico são só do administrador (o funcionário fecha às cegas).
+  if (isAdmin) {
+    document.getElementById('cash-history-section').hidden = false;
+    cashHistoryPage = 1;
+    await loadCashHistory();
+  }
+}
+
+function paintCashLive(s) {
+  const box = document.getElementById('cash-live');
+  const stat = (label, value) => el('div', { class: 'card stat' }, [el('span', { class: 'stat-label' }, label), el('span', { class: 'stat-value' }, value)]);
+  box.append(
+    stat('Dinheiro esperado na gaveta', formatMoney(s.expectedAmount)),
+    stat('Vendas em dinheiro', formatMoney(s.totalsByPaymentMethod.CASH)),
+    stat('Pix', formatMoney(s.totalsByPaymentMethod.PIX)),
+    stat('Débito', formatMoney(s.totalsByPaymentMethod.DEBIT_CARD)),
+    stat('Crédito', formatMoney(s.totalsByPaymentMethod.CREDIT_CARD)),
+    stat(`Total vendido (${s.salesCount})`, formatMoney(s.salesTotal)),
+  );
+  box.hidden = false;
+}
+
+function differenceBadge(diff) {
+  if (diff === null || diff === undefined) return el('span', { class: 'muted' }, '—');
+  const cents = Math.round(diff * 100);
+  if (cents === 0) return el('span', { class: 'badge ok' }, 'Sem diferença');
+  return cents < 0
+    ? el('span', { class: 'badge bad' }, `Falta ${formatMoney(-cents / 100)}`)
+    : el('span', { class: 'badge warn' }, `Sobra ${formatMoney(cents / 100)}`);
+}
+
+function openCashOpenModal() {
+  if (document.getElementById('cash-open-form')) return; // já está aberto na tela
+  const modal = openModal('tpl-cash-open');
+  const input = document.getElementById('cash-opening');
+  wireQuickCash(document.getElementById('cash-opening-quick'), input);
+  input.focus();
+  document.getElementById('cash-open-later').addEventListener('click', () => closeModal(modal));
+
+  const form = document.getElementById('cash-open-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('cash-open-msg');
+    msg.hidden = true;
+    const cents = parseMoneyCents(input.value);
+    if (cents === null) {
+      msg.textContent = 'Informe o fundo de troco em reais, ex: 100,00 (ou 0 se não houver).';
+      msg.hidden = false;
+      return;
+    }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      await api.post('/cash-sessions', { openingAmount: cents / 100 });
+      closeModal(modal);
+      await afterCashChange();
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.hidden = false;
+      if (err.status === 409) await afterCashChange(); // alguém abriu antes
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
+function openCashCloseModal() {
+  const modal = openModal('tpl-cash-close');
+  const input = document.getElementById('cash-counted');
+  input.focus();
+  document.getElementById('cash-close-cancel').addEventListener('click', () => closeModal(modal));
+
+  const form = document.getElementById('cash-close-form');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('cash-close-msg');
+    msg.hidden = true;
+    const cents = parseMoneyCents(input.value);
+    if (cents === null) {
+      msg.textContent = 'Informe o dinheiro contado em reais, ex: 350,00.';
+      msg.hidden = false;
+      return;
+    }
+    if (!confirm(`Fechar o caixa com ${formatMoney(cents / 100)} contados? Depois de fechado, ele não reabre.`)) return;
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      const closed = await api.post('/cash-sessions/current/close', {
+        countedAmount: cents / 100,
+        notes: document.getElementById('cash-notes').value.trim() || null,
+      });
+      closeModal(modal);
+      openCashSummary(closed, 'Caixa fechado');
+      await afterCashChange();
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.hidden = false;
+      if (err.status === 404) await afterCashChange(); // outra pessoa já fechou
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
+// Resumo do caixa. Sem `expectedAmount` na resposta (funcionário), é o
+// fechamento cego: só o que a própria pessoa contou.
+function openCashSummary(session, title) {
+  const modal = openModal('tpl-cash-summary');
+  document.getElementById('cash-summary-title').textContent = title;
+  const body = document.getElementById('cash-summary-body');
+  if (session.expectedAmount === undefined) {
+    body.append(
+      el('p', { class: 'summary-lead' }, `Contagem registrada: ${formatMoney(session.countedAmount)}.`),
+      el('p', { class: 'muted' }, 'O administrador confere o resultado do fechamento.'),
+    );
+  } else {
+    const rows = [
+      ['Aberto', `${formatDateTime(session.openedAt)} por ${session.openedBy}`],
+      ['Fechado', session.closedAt ? `${formatDateTime(session.closedAt)} por ${session.closedBy}` : 'Ainda aberto'],
+      ['Fundo de troco', formatMoney(session.openingAmount)],
+      ['Vendas em dinheiro', formatMoney(session.totalsByPaymentMethod.CASH)],
+      ['Dinheiro esperado', formatMoney(session.expectedAmount)],
+      ['Dinheiro contado', session.countedAmount === null ? '—' : formatMoney(session.countedAmount)],
+      ['Diferença', differenceBadge(session.difference)],
+      ['Pix', formatMoney(session.totalsByPaymentMethod.PIX)],
+      ['Débito', formatMoney(session.totalsByPaymentMethod.DEBIT_CARD)],
+      ['Crédito', formatMoney(session.totalsByPaymentMethod.CREDIT_CARD)],
+      [`Total vendido (${session.salesCount} vendas)`, formatMoney(session.salesTotal)],
+    ];
+    if (session.notes) rows.push(['Observações', session.notes]);
+    const list = el('dl', { class: 'summary-list' });
+    rows.forEach(([label, value]) => list.append(el('dt', {}, label), el('dd', {}, value)));
+    body.append(list);
+  }
+  document.getElementById('cash-summary-ok').addEventListener('click', () => closeModal(modal));
+}
+
+async function loadCashHistory() {
+  const data = await api.get(`/cash-sessions?page=${cashHistoryPage}&pageSize=${LIST_PAGE_SIZE}`);
+  const body = document.getElementById('cash-history');
+  if (!body) return;
+  body.innerHTML = '';
+  data.sessions.forEach((s) => {
+    body.appendChild(el('tr', {}, [
+      el('td', {}, `${formatDateTime(s.openedAt)} · ${s.openedBy}`),
+      el('td', {}, s.closedAt ? `${formatDateTime(s.closedAt)} · ${s.closedBy}` : el('span', { class: 'badge ok' }, 'Aberto agora')),
+      el('td', {}, formatMoney(s.openingAmount)),
+      el('td', {}, formatMoney(s.expectedAmount)),
+      el('td', {}, s.countedAmount === null ? '—' : formatMoney(s.countedAmount)),
+      el('td', {}, differenceBadge(s.difference)),
+      el('td', {}, `${s.salesCount} · ${formatMoney(s.salesTotal)}`),
+      el('td', {}, el('button', { class: 'small secondary', type: 'button', onclick: () => openCashSummary(s, 'Detalhes do caixa') }, 'Detalhes')),
+    ]));
+  });
+  if (data.sessions.length === 0) body.appendChild(el('tr', {}, el('td', { colspan: '8', class: 'muted' }, 'Nenhum caixa registrado.')));
+  renderPager('cash-pager', data, (nextPage) => {
+    cashHistoryPage = nextPage;
+    loadCashHistory();
+  });
 }
 
 // ---------- Produtos ----------
@@ -469,18 +789,34 @@ async function renderEstoque() {
     adjSelect.appendChild(el('option', { value: p.id }, `${p.name} (${p.currentStock} ${p.unit})`));
   });
 
+  // Validade obrigatória — é ela que alimenta o PVPS e os alertas de vencimento.
+  // Produto que não vence (limpeza, higiene) precisa ser marcado de propósito.
+  const expiryInput = document.getElementById('entry-expiry');
+  const noExpiry = document.getElementById('entry-no-expiry');
+  noExpiry.addEventListener('change', () => {
+    expiryInput.disabled = noExpiry.checked;
+    expiryInput.required = !noExpiry.checked;
+    if (noExpiry.checked) expiryInput.value = '';
+  });
+
   document.getElementById('entry-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const msg = document.getElementById('entry-msg');
     msg.hidden = true;
+    document.getElementById('entry-ok').hidden = true;
+    const expiryDate = noExpiry.checked ? null : expiryInput.value;
+    if (expiryDate && expiryDate < localDateISO() && !confirm('A validade informada já passou. Registrar o lote mesmo assim?')) return;
     try {
-      await api.post('/stock/entries', {
+      const { batch } = await api.post('/stock/entries', {
         productId: entrySelect.value,
         quantity: parseFloat(document.getElementById('entry-qty').value),
         reason: document.getElementById('entry-reason').value || undefined,
+        expiryDate,
       });
-      document.getElementById('entry-form').reset();
       await renderEstoque();
+      const ok = document.getElementById('entry-ok');
+      ok.textContent = `Lote registrado: ${batch.quantity} ${batch.unit} de ${batch.product}, ${batch.expiryDate ? `validade ${formatDate(batch.expiryDate)}` : 'sem validade'}.`;
+      ok.hidden = false;
     } catch (err) {
       msg.textContent = err.message;
       msg.hidden = false;
@@ -889,6 +1225,12 @@ function openUserForm(user) {
 }
 
 // ---------- Utils ----------
+// Hoje no calendário local, no formato AAAA-MM-DD do <input type="date">.
+function localDateISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function debounce(fn, ms) {
   let timer = null;
   return (...args) => {

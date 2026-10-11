@@ -19,18 +19,21 @@ async function apiRequest(path, { method = 'GET', body } = {}) {
   const isJson = res.headers.get('content-type')?.includes('application/json');
   const data = isJson ? await res.json() : null;
 
+  // O status vai junto no erro: quem chama distingue, por exemplo, "nenhum
+  // caixa aberto" (404) de uma falha de verdade.
+  const fail = (message) => Object.assign(new Error(message), { status: res.status });
+
   if (res.status === 401) {
     if (!location.pathname.endsWith('/index.html') && location.pathname !== '/') {
       location.href = '/index.html';
     }
     // Repassa a mensagem do servidor — no login é ela que diz se foi o
     // e-mail ou a senha que errou.
-    throw new Error((data && data.error) || 'Não autenticado.');
+    throw fail((data && data.error) || 'Não autenticado.');
   }
 
   if (!res.ok) {
-    const message = (data && data.error) || `Erro (${res.status}).`;
-    throw new Error(message);
+    throw fail((data && data.error) || `Erro (${res.status}).`);
   }
 
   return data;
@@ -47,9 +50,21 @@ function formatMoney(value) {
   return Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+// Valor em reais digitado no balcão ("50", "7,5", "R$ 1.234,56", "12.50") em
+// centavos inteiros — conta de troco sem erro de ponto flutuante. null se inválido.
+function parseMoneyCents(text) {
+  let s = String(text ?? '').trim().replace(/^R\$/i, '').replace(/\s/g, '');
+  if (!s) return null;
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  return Math.round(Number(s) * 100);
+}
+
+// Para datas de calendário (validades), gravadas como meia-noite UTC: no fuso
+// do Brasil (UTC-3) a conversão local mostrava um dia antes (31/12 virava 30/12).
 function formatDate(value) {
   if (!value) return '—';
-  return new Date(value).toLocaleDateString('pt-BR');
+  return new Date(value).toLocaleDateString('pt-BR', { timeZone: 'UTC' });
 }
 
 function formatDateTime(value) {
