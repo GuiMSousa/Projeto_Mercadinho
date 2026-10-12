@@ -86,4 +86,7 @@ function el(tag, attrs = {}, children = []) {
     node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
   }
   return node;
+
+  // Correto para funcionar no PC e no Telemóvel:
+  const API_BASE_URL = '/api';
 }

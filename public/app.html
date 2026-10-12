@@ -480,10 +480,11 @@
     <div class="card op scanner-card">
       <h3>Ler código de barras</h3>
       <div class="scanner-view">
-        <video id="scanner-video" muted playsinline></video>
+        <video id="scanner-video" autoplay muted playsinline webkit-playsinline></video>
         <div class="scanner-guide" aria-hidden="true"></div>
       </div>
       <p id="scanner-status" class="scanner-status" role="status" aria-live="polite">Abrindo a câmera…</p>
+      <button type="button" id="scanner-switch" class="btn-xl btn-wide" hidden>Trocar câmera</button>
       <button type="button" id="scanner-close" class="btn-xl btn-wide secondary">Fechar câmera</button>
     </div>
   </template>

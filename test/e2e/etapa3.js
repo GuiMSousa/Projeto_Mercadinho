@@ -26,15 +26,15 @@ function ean13Bars(code) {
   return `101${left}01010${d.slice(7).map((n) => R[n]).join('')}101`;
 }
 
-// Vídeo YUV4MPEG2 em tons de cinza: cada item da sequência fica 1 s na tela (null = sem código).
+// Vídeo YUV4MPEG2 em tons de cinza: cada item da sequência fica 1 s na tela (null = sem código, 'black' = quadro preto).
 function writeFakeCamera(file, sequence) {
   const W = 480;
   const H = 270;
   const FPS = 5;
   const MODULE = 3; // px por barra fina
   const frame = (code) => {
-    const luma = Buffer.alloc(W * H, 255);
-    if (code) {
+    const luma = Buffer.alloc(W * H, code === 'black' ? 0 : 255);
+    if (code && code !== 'black') {
       const bars = ean13Bars(code);
       const x0 = Math.floor((W - bars.length * MODULE) / 2);
       for (let y = 45; y < H - 45; y += 1) {
@@ -68,6 +68,20 @@ const instrument = () => {
     const view = document.querySelector('.scanner-view.hit, .scanner-view.miss');
     if (view) window.__flashes.add(view.classList.contains('hit') ? 'hit' : 'miss');
   }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+};
+// Simula um celular com duas lentes: a segunda é a mesma câmera falsa com outro deviceId.
+const twoLenses = () => {
+  const enumerate = MediaDevices.prototype.enumerateDevices;
+  MediaDevices.prototype.enumerateDevices = async function () {
+    const list = await enumerate.call(this);
+    const cam = list.find((d) => d.kind === 'videoinput');
+    return cam ? [...list, { kind: 'videoinput', deviceId: 'lente-2', label: 'Lente 2', groupId: cam.groupId }] : list;
+  };
+  const getUserMedia = MediaDevices.prototype.getUserMedia;
+  MediaDevices.prototype.getUserMedia = function (constraints) {
+    const wantsLens2 = constraints?.video?.deviceId?.exact === 'lente-2';
+    return getUserMedia.call(this, wantsLens2 ? { ...constraints, video: true } : constraints);
+  };
 };
 // Simula o acesso por http://IP-da-rede: sem contexto seguro o navegador não oferece a câmera.
 const insecure = () => {
@@ -108,6 +122,37 @@ run(async () => {
   check(layout.spread <= 4 && !layout.overflow, `marca, abas, indicador do caixa e usuário na mesma linha, sem rolagem lateral (topo com ${layout.height}px)`);
   await page.screenshot({ path: shot('21-menu-1280.png'), clip: { x: 0, y: 0, width: 1280, height: layout.height } });
 
+  // Celular (largura de iPhone): abas numa linha só, rolando para o lado, e topo compacto.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const phone = await page.evaluate(() => {
+    const tabs = [...document.querySelectorAll('.tab-btn')].filter((b) => b.getClientRects().length > 0);
+    const nav = document.getElementById('tabs');
+    return {
+      rows: new Set(tabs.map((b) => Math.round(b.getBoundingClientRect().top))).size,
+      scrolls: nav.scrollWidth > nav.clientWidth && getComputedStyle(nav).overflowX === 'auto',
+      height: document.querySelector('.topbar').offsetHeight,
+      overflow: document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  check(phone.rows === 1 && phone.scrolls, 'celular: as abas ficam numa linha só, com rolagem lateral');
+  check(phone.height <= 120 && !phone.overflow, `celular: topo compacto (${phone.height}px) e sem rolagem lateral da página`);
+  await page.click('button[data-tab="usuarios"]');
+  await page.waitForFunction(() => { const b = document.querySelector('.tab-btn.active').getBoundingClientRect(); return b.left >= 0 && b.right <= window.innerWidth; });
+  check(true, 'celular: a aba aberta rola para ficar à vista');
+  await page.screenshot({ path: shot('25-menu-celular.png'), clip: { x: 0, y: 0, width: 390, height: phone.height } });
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // Rede lenta (celular pelo túnel): a resposta da aba anterior chega depois da troca de aba.
+  let release;
+  const delayed = new Promise((r) => { release = r; });
+  await page.route('**/api/users', async (route) => { await new Promise((r) => setTimeout(r, 1000)); await route.continue(); release(route.request()); });
+  await page.click('button[data-tab="usuarios"]');
+  await page.click('button[data-tab="dashboard"]');
+  await (await delayed).response(); // a resposta atrasada chegou à página
+  await page.waitForTimeout(200);
+  await page.unroute('**/api/users');
+  check(await page.isVisible('.semaforo-card') && !(await page.isVisible('#users-list')), 'rede lenta: trocar de aba antes da resposta chegar não quebra a tela nova');
+
   // ---------- PDV: leitura contínua ----------
   await page.click('button[data-tab="vendas"]');
   await page.waitForSelector('#sale-scan-btn');
@@ -137,12 +182,15 @@ run(async () => {
   const flashes = await page.evaluate(() => [...window.__flashes]);
   check(flashes.includes('hit') && flashes.includes('miss'), 'a moldura do vídeo pisca verde no acerto e vermelha no erro');
   await page.screenshot({ path: shot('22-pdv-camera.png') });
+  check(!(await page.evaluate(() => window.__statuses.some((s) => s.includes('sem imagem')))), 'com imagem chegando, o diagnóstico de "sem imagem" não aparece');
+  check(await page.isHidden('#scanner-switch'), 'com uma câmera só, "Trocar câmera" fica escondido');
 
   await page.click('#scanner-close');
   await page.waitForSelector('#scanner-video', { state: 'detached' });
   check(await cameraOff(page), '"Fechar câmera" desliga a câmera');
+  const opened = await page.evaluate(() => window.__streams.length);
   await page.click('#sale-scan-btn');
-  await page.waitForFunction(() => window.__streams.length === 2 && window.__streams[1].active);
+  await page.waitForFunction((n) => window.__streams.length === n + 1 && window.__streams[n].active, opened);
   await page.keyboard.press('Escape');
   await page.waitForSelector('#scanner-video', { state: 'detached' });
   check(await cameraOff(page), 'fechar com Esc também desliga a câmera');
@@ -178,6 +226,45 @@ run(async () => {
   check(why.startsWith('A câmera só funciona com o sistema aberto em https://'), `sem contexto seguro, o leitor explica o motivo: "${why}"`);
   await cashierPage.screenshot({ path: shot('24-sem-camera.png') });
 
+  // ---------- Celular com várias lentes: "Trocar câmera" ----------
+  // A câmera falsa com padrão sintético encerra a trilha sozinha em ~5% das aberturas
+  // (medido sem o app), então a segunda lente é simulada sobre a câmera de vídeo, que é estável.
+  const lensPage = await newPage(browser, { permissions: ['camera'], initScript: instrument });
+  await lensPage.context().addInitScript(twoLenses);
+  await login(lensPage, ADMIN);
+  await skipCashOpen(lensPage);
+  await lensPage.click('button[data-tab="vendas"]');
+  await lensPage.click('#sale-scan-btn');
+  await lensPage.waitForSelector('#scanner-switch:not([hidden])');
+  check(true, 'com mais de uma câmera aparece "Trocar câmera"');
+  await lensPage.click('#scanner-switch');
+  await lensPage.waitForFunction(() => window.__streams.length === 2 && window.__streams[1].active);
+  check(await lensPage.evaluate(() => window.__streams[0].getTracks().every((t) => t.readyState === 'ended')), '"Trocar câmera" desliga a câmera anterior');
+  await lensPage.waitForFunction(() => window.__statuses.some((x) => x.startsWith('Câmera: Lente 2. Aponte')));
+  check(true, 'avisa qual câmera ficou ativa ("Lente 2")');
+  await lensPage.waitForTimeout(4500); // passa do prazo do diagnóstico
+  check(!(await lensPage.evaluate(() => window.__statuses.some((x) => x.includes('sem imagem')))), 'depois da troca a imagem chega e o diagnóstico não aparece');
+  await lensPage.click('#scanner-close');
+  check(await cameraOff(lensPage), 'fechar depois da troca desliga a câmera nova');
+
   await browser.close();
   fs.rmSync(video, { force: true });
+
+  // ---------- Câmera ligada, mas entregando quadro preto: o diagnóstico aparece ----------
+  const blackVideo = path.join(os.tmpdir(), `contro-vend-camera-preta-${stamp}.y4m`);
+  writeFakeCamera(blackVideo, ['black']);
+  const darkBrowser = await launch(['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${blackVideo}`]);
+  const darkPage = await newPage(darkBrowser, { permissions: ['camera'] });
+  await login(darkPage, ADMIN);
+  await skipCashOpen(darkPage);
+  await darkPage.click('button[data-tab="vendas"]');
+  await darkPage.click('#sale-scan-btn');
+  await darkPage.waitForFunction(() => document.getElementById('scanner-status')?.textContent.includes('sem imagem'), null, { timeout: 10000 });
+  const diag = norm(await darkPage.innerText('#scanner-status'));
+  console.log(`  diagnóstico: ${diag}`);
+  check(diag.includes('quadro preto') && diag.includes('contro-vend-camera-preta') && diag.includes('tocando'), 'câmera com quadro preto: o leitor mostra o diagnóstico com a câmera e o estado do vídeo');
+  await darkPage.screenshot({ path: shot('26-diagnostico-sem-imagem.png') });
+  await darkBrowser.close();
+  fs.rmSync(blackVideo, { force: true });
+
 });

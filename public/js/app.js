@@ -21,7 +21,12 @@ const URGENCY_INFO = {
 
 const content = document.getElementById('content');
 
+// Muda a cada troca de tela. Quem espera a API confere se a tela ainda é a mesma antes de
+// escrever nela: com rede lenta (celular pelo túnel) a resposta chega depois da troca de aba.
+let viewSeq = 0;
+
 function activeTemplate(name) {
+  viewSeq += 1;
   const tpl = document.getElementById(`tpl-${name}`);
   content.innerHTML = '';
   content.appendChild(tpl.content.cloneNode(true));
@@ -62,6 +67,8 @@ function closeModal(backdrop) {
 function switchTab(name, options) {
   currentTab = name;
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  // No celular as abas rolam para o lado: traz à vista a aba aberta por outro caminho (ex.: cartão do painel).
+  document.querySelector('.tab-btn.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   const renderers = {
     dashboard: renderDashboard,
     vendas: renderVendas,
@@ -117,7 +124,9 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 async function renderDashboard() {
   activeTemplate('dashboard');
   document.getElementById('dash-shopping-btn').addEventListener('click', () => switchTab('compras'));
+  const seq = viewSeq;
   const [data, counts] = await Promise.all([api.get('/dashboard'), urgencyCounts()]);
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
 
   // Contagem de cada cor do semáforo; tocar num cartão abre os produtos filtrados.
   const summary = document.getElementById('semaforo-summary');
@@ -418,7 +427,9 @@ function openReceipt(sale, receivedCents = null) {
 }
 
 async function loadRecentSales() {
+  const seq = viewSeq;
   const data = await api.get('/sales?pageSize=15');
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
   const body = document.getElementById('sales-list');
   body.innerHTML = '';
   data.sales.forEach((s) => {
@@ -474,7 +485,9 @@ async function afterCashChange() {
 
 async function renderCaixa() {
   activeTemplate('caixa');
+  const seq = viewSeq;
   await refreshCashStatus();
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
   const isAdmin = currentUser.role === 'ADMIN';
   const state = document.getElementById('cash-state');
   const openBtn = document.getElementById('cash-open-btn');
@@ -663,7 +676,9 @@ async function renderProdutos(options) {
   productsPage = 1;
   productUrgencyFilter = options?.urgency || null; // vindo de um cartão do painel
   paintUrgencyFilter();
+  const seq = viewSeq;
   await loadProducts();
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
 
   document.getElementById('product-search').addEventListener('input', debounce(() => {
     productsPage = 1;
@@ -755,7 +770,9 @@ async function loadProducts() {
   // Filtrando por cor, só os ativos — a mesma conta dos cartões do painel.
   const includeInactive = currentUser.role === 'ADMIN' && !productUrgencyFilter ? '&includeInactive=true' : '';
   const urgency = productUrgencyFilter ? `&urgency=${productUrgencyFilter}` : '';
+  const seq = viewSeq;
   const data = await api.get(`/products?query=${encodeURIComponent(term)}${includeInactive}${urgency}&page=${productsPage}&pageSize=${LIST_PAGE_SIZE}`);
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
   const products = data.products;
   const body = document.getElementById('products-list');
   body.innerHTML = '';
@@ -870,7 +887,9 @@ function openProductForm(product) {
 // ---------- Compras ----------
 async function renderCompras() {
   activeTemplate('compras');
+  const seq = viewSeq;
   const [list, text] = await Promise.all([api.get('/shopping-list'), api.get('/shopping-list?format=text')]);
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
 
   const body = document.getElementById('shop-list');
   list.items.forEach((item) => {
@@ -931,7 +950,9 @@ async function copyText(text) {
 async function renderEstoque() {
   activeTemplate('estoque');
   movementsPage = 1;
+  const seq = viewSeq;
   const products = await api.get('/products');
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
 
   const entrySelect = document.getElementById('entry-product');
   const adjSelect = document.getElementById('adjustment-product');
@@ -1282,11 +1303,13 @@ async function loadReports() {
   if (from) qs.set('from', from);
   if (to) qs.set('to', to);
 
+  const seq = viewSeq;
   const [summary, topProducts, slowMoving] = await Promise.all([
     api.get(`/reports/sales-summary?${qs.toString()}`),
     api.get(`/reports/top-products?${qs.toString()}`),
     api.get('/reports/slow-moving'),
   ]);
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
 
   document.getElementById('rep-total').textContent = formatMoney(summary.total);
   document.getElementById('rep-count').textContent = String(summary.count);
@@ -1321,7 +1344,9 @@ async function renderUsuarios() {
 }
 
 async function loadUsers() {
+  const seq = viewSeq;
   const users = await api.get('/users');
+  if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
   const body = document.getElementById('users-list');
   body.innerHTML = '';
   users.forEach((u) => {
@@ -1479,11 +1504,14 @@ async function openScanner({ onCode, continuous = false }) {
   const video = backdrop.querySelector('#scanner-video');
   const view = backdrop.querySelector('.scanner-view');
   const status = backdrop.querySelector('#scanner-status');
+  const switchBtn = backdrop.querySelector('#scanner-switch');
   const say = (text, kind = '') => { status.textContent = text; status.className = `scanner-status ${kind}`; };
   let stream = null;
   let timer = null;
+  let imageTimer = null;
   let closed = false;
-  const stopCamera = () => { if (stream) stream.getTracks().forEach((t) => t.stop()); };
+  // Parar a câmera cancela o diagnóstico: senão ele cobriria, 4 s depois, a mensagem do erro real.
+  const stopCamera = () => { clearTimeout(imageTimer); if (stream) stream.getTracks().forEach((t) => t.stop()); };
   backdrop._onClose = () => { closed = true; clearTimeout(timer); stopCamera(); };
   backdrop.querySelector('#scanner-close').addEventListener('click', () => closeModal(backdrop));
   // Criado no clique: depois de um gesto do usuário o navegador deixa tocar o bipe.
@@ -1495,12 +1523,39 @@ async function openScanner({ onCode, continuous = false }) {
       : 'A câmera só funciona com o sistema aberto em https:// ou em http://localhost. Use a busca ou um leitor USB.', 'bad');
     return;
   }
-  let read;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+  video.muted = true; // Safari do iPhone: vídeo da câmera só toca na página (playsinline) e mudo
+
+  // Diagnóstico para o celular, onde não há inspetor à mão: se em 4 s não chegou
+  // imagem, diz onde parou (vídeo travado, câmera entregando quadro preto...).
+  const checkImage = () => {
+    if (closed || !stream) return;
+    const track = stream.getVideoTracks()[0];
+    const ctx = el('canvas', { width: '32', height: '32' }).getContext('2d');
+    let lit = false;
+    try {
+      ctx.drawImage(video, 0, 0, 32, 32);
+      lit = ctx.getImageData(0, 0, 32, 32).data.some((v, i) => i % 4 !== 3 && v > 24);
+    } catch { /* ainda sem quadro para desenhar */ }
+    if (lit && !video.paused) return;
+    const { width, height } = track.getSettings();
+    say(`Câmera ligada, mas sem imagem. ${switchBtn.hidden ? 'Mande' : 'Toque em "Trocar câmera" ou mande'} um print desta mensagem. [vídeo ${video.readyState} ${video.paused ? 'pausado' : 'tocando'} ${video.videoWidth}x${video.videoHeight} · câmera "${track.label}" ${track.readyState}${track.muted ? ' muda' : ''} ${width}x${height} · quadro ${lit ? 'com imagem' : 'preto'} · som ${scanAudio ? scanAudio.state : '-'}]`, 'bad');
+  };
+
+  // Primeiro a câmera traseira; "Trocar câmera" escolhe outra lente pelo deviceId.
+  const startCamera = async (deviceId) => {
+    stopCamera();
+    const constraints = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } };
+    stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
     if (closed) return stopCamera(); // fechou o modal enquanto a câmera abria
     video.srcObject = stream;
+    imageTimer = setTimeout(checkImage, 4000); // antes do play(): pega também o caso de ele nunca terminar
     await video.play();
+  };
+
+  let read;
+  try {
+    await startCamera();
+    if (closed) return;
     read = await makeBarcodeReader();
   } catch (err) {
     stopCamera();
@@ -1508,6 +1563,22 @@ async function openScanner({ onCode, continuous = false }) {
     return;
   }
   say('Aponte a câmera para o código de barras.');
+
+  const cameras = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+  switchBtn.hidden = cameras.length < 2;
+  switchBtn.addEventListener('click', async () => {
+    const current = stream.getVideoTracks()[0].getSettings().deviceId;
+    const next = cameras[(cameras.findIndex((c) => c.deviceId === current) + 1) % cameras.length];
+    switchBtn.disabled = true; // dois cliques seguidos abririam duas câmeras
+    try {
+      await startCamera(next.deviceId);
+      say(`Câmera: ${next.label || 'outra câmera'}. Aponte para o código de barras.`);
+    } catch (err) {
+      say(CAMERA_ERRORS[err.name] || err.message, 'bad');
+    } finally {
+      switchBtn.disabled = false;
+    }
+  });
 
   let last = null;
   let lastSeen = 0;

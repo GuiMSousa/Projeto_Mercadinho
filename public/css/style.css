@@ -457,6 +457,19 @@ textarea.field-xl { min-height: 100px; }
 .cash-chip::before { content: "●"; margin-right: 8px; }
 .cash-chip.open, .cash-chip.open:hover { background: var(--ok-soft); color: var(--ok); }
 .cash-chip.closed, .cash-chip.closed:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* Celular: topo compacto. Ícone, caixa e usuário numa linha; as abas numa linha só
+   que rola para o lado, em vez de empilhadas ocupando meia tela. */
+@media (max-width: 700px) {
+  .topbar { gap: 8px; padding: 8px 12px; }
+  .brand { font-size: 0; gap: 0; } /* fica só o ícone "CV" */
+  .cash-chip { padding: 6px 12px; font-size: 0.875rem; }
+  .user-box { flex: 1 1 0; min-width: 0; justify-content: flex-end; gap: 8px; } /* ocupa o que sobra; o nome encolhe com "…" */
+  .tabs { order: 1; flex: 1 0 100%; flex-wrap: nowrap; overflow-x: auto; }
+  .tab-btn { flex: none; white-space: nowrap; }
+  /* O Safari do iPhone dá zoom ao focar campo com fonte menor que 16px. */
+  input, select, textarea { font-size: 16px; }
+}
 .cash-state { margin: 0 0 4px; font-size: 24pt; font-weight: 800; }
 .cash-state.open { color: var(--primary-hover); }
 .cash-state.closed { color: var(--danger); }

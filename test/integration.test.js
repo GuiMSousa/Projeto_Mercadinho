@@ -68,6 +68,12 @@ test('CSRF: rota que altera estado rejeita requisição sem X-Requested-With', a
   assert.equal(res.status, 403);
 });
 
+test('CSP: upgrade-insecure-requests só com HTTPS (senão o acesso por http://IP abre sem CSS e JS)', async () => {
+  const csp = (await fetch(`${baseUrl}/`)).headers.get('content-security-policy');
+  assert.equal(csp.includes('upgrade-insecure-requests'), config.cookieSecure);
+  assert.match(csp, /script-src 'self'/);
+});
+
 test('SQL injection: payload é armazenado como texto literal, nunca executado', async () => {
   const payload = "Teste'; DROP TABLE \"Product\"; --";
   const created = await request(baseUrl, adminJar, '/api/products', {

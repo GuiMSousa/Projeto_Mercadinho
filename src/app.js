@@ -39,6 +39,9 @@ app.use(
         'script-src': ["'self'"],
         'style-src': ["'self'"],
         'img-src': ["'self'", 'data:'],
+        // Só em HTTPS: servido por http://IP-da-rede (celular na loja), o navegador
+        // trocaria CSS, JS e API para https:// e a página abriria quebrada.
+        'upgrade-insecure-requests': config.cookieSecure ? [] : null,
       },
     },
   }),
