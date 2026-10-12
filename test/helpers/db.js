@@ -29,6 +29,7 @@ async function resetDb() {
   await prisma.stockMovement.deleteMany();
   await prisma.saleItem.deleteMany();
   await prisma.sale.deleteMany();
+  await prisma.cashMovement.deleteMany();
   await prisma.cashSession.deleteMany();
   await prisma.stockBatch.deleteMany();
   await prisma.product.deleteMany();

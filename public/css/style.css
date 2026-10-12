@@ -591,3 +591,8 @@ textarea.field-xl { min-height: 100px; }
 .scanner-status { margin: 14px 0 0; min-height: 1.5em; font-weight: 700; }
 .scanner-status.ok { color: var(--primary-hover); }
 .scanner-status.bad { color: var(--danger); }
+
+/* ---------- Caixa: sangria, suprimento e quebra ao vivo ---------- */
+.change-line.warn { color: var(--warn); }
+#cash-movements { margin-top: 16px; }
+#cash-close-summary { margin-top: 12px; }

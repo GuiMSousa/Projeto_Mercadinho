@@ -594,7 +594,8 @@ paths:
       summary: Registrar venda
       description: >-
         Preço e vendedor vêm sempre do servidor. A venda é atômica: estoque insuficiente
-        em qualquer item recusa a venda inteira (409).
+        em qualquer item recusa a venda inteira (409). Sem caixa aberto a venda também
+        recebe 409 e nada é gravado.
       parameters:
         - $ref: '#/components/parameters/XRequestedWith'
       requestBody:
@@ -1122,9 +1123,9 @@ paths:
       operationId: closeCashSession
       summary: Fechar o caixa com o dinheiro contado
       description: >-
-        Esperado = fundo de troco + vendas em dinheiro não canceladas do caixa; diferença =
-        contado − esperado (positiva é sobra). Os valores ficam gravados. Para CASHIER a
-        resposta é cega (só o que ele informou).
+        Esperado = fundo de troco + vendas em dinheiro não canceladas do caixa + suprimentos
+        − sangrias; diferença = contado − esperado (positiva é sobra). Os valores ficam
+        gravados. Para CASHIER a resposta é cega (só o que ele informou).
       parameters:
         - $ref: '#/components/parameters/XRequestedWith'
       requestBody:
@@ -1150,6 +1151,38 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  /api/cash-sessions/current/movements:
+    post:
+      tags: [CashSessions]
+      operationId: createCashMovement
+      summary: Registrar sangria ou suprimento no caixa aberto
+      description: >-
+        Sangria (`WITHDRAWAL`) é dinheiro que sai da gaveta; suprimento (`DEPOSIT`), dinheiro
+        que entra. O motivo é obrigatório. Entra no dinheiro esperado do caixa.
+      parameters:
+        - $ref: '#/components/parameters/XRequestedWith'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CashMovementInput'
+      responses:
+        '201':
+          description: Movimentação registrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashMovement'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/cash-sessions/{id}:
     parameters:
@@ -2337,7 +2370,7 @@ components:
           type: [string, 'null']
         expectedAmount:
           type: number
-          description: Fundo de troco + vendas em dinheiro não canceladas do caixa.
+          description: Fundo de troco + vendas em dinheiro não canceladas + suprimentos − sangrias.
         difference:
           type: [number, 'null']
           description: Contado − esperado (positivo é sobra, negativo é falta).
@@ -2347,6 +2380,55 @@ components:
           type: number
         totalsByPaymentMethod:
           $ref: '#/components/schemas/PaymentTotals'
+        depositsTotal:
+          type: number
+          description: Soma dos suprimentos.
+        withdrawalsTotal:
+          type: number
+          description: Soma das sangrias.
+        movements:
+          type: array
+          description: Sangrias e suprimentos, na ordem; só no caixa atual, no detalhe e no fechamento.
+          items:
+            $ref: '#/components/schemas/CashMovement'
+
+    CashMovementInput:
+      type: object
+      required: [type, amount, reason]
+      properties:
+        type:
+          type: string
+          enum: [WITHDRAWAL, DEPOSIT]
+          description: WITHDRAWAL = sangria; DEPOSIT = suprimento.
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1000000
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Depósito no banco
+
+    CashMovement:
+      type: object
+      required: [id, type, amount, reason, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [WITHDRAWAL, DEPOSIT]
+        amount:
+          type: number
+        reason:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
 
     CashSessionPage:
       type: object

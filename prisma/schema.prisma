@@ -26,6 +26,11 @@ enum PaymentMethod {
   CREDIT_CARD
 }
 
+enum CashMovementType {
+  WITHDRAWAL // sangria: dinheiro que sai da gaveta
+  DEPOSIT // suprimento: dinheiro que entra (troco)
+}
+
 model User {
   id                  String               @id @default(uuid())
   name                String
@@ -43,6 +48,7 @@ model User {
   passwordResetTokens PasswordResetToken[]
   cashSessionsOpened  CashSession[]        @relation("CashSessionOpenedBy")
   cashSessionsClosed  CashSession[]        @relation("CashSessionClosedBy")
+  cashMovements       CashMovement[]
 }
 
 model PasswordResetToken {
@@ -111,24 +117,41 @@ model StockMovementBatch {
 }
 
 model CashSession {
-  id             String    @id @default(uuid())
+  id             String         @id @default(uuid())
   // true enquanto aberto, null depois de fechado: o índice único aceita vários
   // NULL, então nunca existem dois caixas abertos ao mesmo tempo.
-  isOpen         Boolean?  @unique @default(true)
-  openingAmount  Decimal   @db.Decimal(12, 2)
+  isOpen         Boolean?       @unique @default(true)
+  openingAmount  Decimal        @db.Decimal(12, 2)
   openedById     String
-  openedBy       User      @relation("CashSessionOpenedBy", fields: [openedById], references: [id])
-  openedAt       DateTime  @default(now())
+  openedBy       User           @relation("CashSessionOpenedBy", fields: [openedById], references: [id])
+  openedAt       DateTime       @default(now())
   closedById     String?
-  closedBy       User?     @relation("CashSessionClosedBy", fields: [closedById], references: [id])
+  closedBy       User?          @relation("CashSessionClosedBy", fields: [closedById], references: [id])
   closedAt       DateTime?
-  countedAmount  Decimal?  @db.Decimal(12, 2)
-  // Gravado no fechamento: fundo de troco + vendas em dinheiro não canceladas.
-  expectedAmount Decimal?  @db.Decimal(12, 2)
+  countedAmount  Decimal?       @db.Decimal(12, 2)
+  // Gravado no fechamento: fundo de troco + vendas em dinheiro não canceladas
+  // + suprimentos - sangrias.
+  expectedAmount Decimal?       @db.Decimal(12, 2)
   notes          String?
   sales          Sale[]
+  movements      CashMovement[]
 
   @@index([openedAt])
+}
+
+// Sangria (retirada) ou suprimento (entrada de troco) no meio do caixa.
+model CashMovement {
+  id            String           @id @default(uuid())
+  cashSessionId String
+  cashSession   CashSession      @relation(fields: [cashSessionId], references: [id])
+  type          CashMovementType
+  amount        Decimal          @db.Decimal(12, 2)
+  reason        String
+  userId        String
+  user          User             @relation(fields: [userId], references: [id])
+  createdAt     DateTime         @default(now())
+
+  @@index([cashSessionId])
 }
 
 model Sale {

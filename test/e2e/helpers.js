@@ -17,6 +17,10 @@ const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 let pass = 0;
 let fail = 0;
 const problems = [];
+// Respostas de erro esperadas: 401 do /auth/me na tela de login e 404 de "nenhum caixa aberto".
+const allowedHttp = new Set(['401 /api/auth/me', '404 /api/cash-sessions/current']);
+// Erro HTTP que o teste provoca de propósito (ex.: venda recusada com o caixa fechado).
+const allowHttpError = (status, path) => allowedHttp.add(`${status} ${path}`);
 const check = (cond, label) => {
   if (cond) pass += 1; else fail += 1;
   console.log(`${cond ? '✔' : '✖'} ${label}`);
@@ -45,12 +49,10 @@ async function newPage(browser, { permissions = [], initScript } = {}) {
   if (permissions.length) await context.grantPermissions(permissions, { origin: base });
   if (initScript) await context.addInitScript(initScript);
   const page = await context.newPage();
-  // Respostas de erro esperadas: 401 do /auth/me na tela de login e 404 de "nenhum caixa aberto".
   page.on('response', (r) => {
     if (r.status() < 400) return;
     const p = new URL(r.url()).pathname;
-    const expected = (r.status() === 401 && p === '/api/auth/me') || (r.status() === 404 && p === '/api/cash-sessions/current');
-    if (!expected) problems.push(`HTTP ${r.status()} ${p}`);
+    if (!allowedHttp.has(`${r.status()} ${p}`)) problems.push(`HTTP ${r.status()} ${p}`);
   });
   page.on('console', (m) => { if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) problems.push(`console: ${m.text()}`); });
   page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
@@ -82,4 +84,4 @@ function run(main) {
     .catch((e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { base, ADMIN, CASHIER, shot, norm, check, launch, apiAs, newPage, login, skipCashOpen, run };
+module.exports = { base, ADMIN, CASHIER, shot, norm, check, launch, apiAs, newPage, login, skipCashOpen, allowHttpError, run };

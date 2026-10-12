@@ -316,6 +316,9 @@ function updateCheckout() {
     }
   }
 
+  // Sem caixa aberto a venda ficaria fora do fechamento (o servidor também recusa).
+  if (!cashSession) blocker = 'Caixa fechado: abra o caixa para finalizar a venda.';
+
   btn.disabled = Boolean(blocker) || saleInFlight;
   btn.textContent = saleInFlight ? 'Registrando…' : 'Confirmar venda';
   document.getElementById('sale-hint').textContent = saleInFlight ? '' : blocker;
@@ -324,6 +327,7 @@ function updateCheckout() {
 function paintSaleCashWarning() {
   const banner = document.getElementById('sale-cash-warning');
   if (banner) banner.hidden = Boolean(cashSession);
+  updateCheckout(); // finalizar a venda depende do caixa aberto
 }
 
 function addToCart(product) {
@@ -396,6 +400,8 @@ async function confirmSale() {
   } catch (err) {
     msg.textContent = err.message;
     msg.hidden = false;
+    // 409 pode ser o caixa fechado em outro aparelho: atualiza o aviso e o bloqueio.
+    if (err.status === 409) await refreshCashStatus().then(paintSaleCashWarning).catch(() => {});
   } finally {
     saleInFlight = false;
     updateCheckout();
@@ -532,6 +538,8 @@ async function renderCaixa() {
   const state = document.getElementById('cash-state');
   const openBtn = document.getElementById('cash-open-btn');
   const closeBtn = document.getElementById('cash-close-btn');
+  const withdrawBtn = document.getElementById('cash-withdraw-btn');
+  const depositBtn = document.getElementById('cash-deposit-btn');
 
   if (cashSession) {
     state.textContent = 'Caixa aberto';
@@ -539,6 +547,8 @@ async function renderCaixa() {
     document.getElementById('cash-state-meta').textContent =
       `Aberto por ${cashSession.openedBy} em ${formatDateTime(cashSession.openedAt)} · fundo de troco ${formatMoney(cashSession.openingAmount)}`;
     closeBtn.hidden = false;
+    withdrawBtn.hidden = false;
+    depositBtn.hidden = false;
     if (isAdmin) paintCashLive(cashSession);
   } else {
     state.textContent = 'Caixa fechado';
@@ -548,6 +558,8 @@ async function renderCaixa() {
   }
   openBtn.addEventListener('click', () => openCashOpenModal());
   closeBtn.addEventListener('click', () => openCashCloseModal());
+  withdrawBtn.addEventListener('click', () => openCashMovementModal('WITHDRAWAL'));
+  depositBtn.addEventListener('click', () => openCashMovementModal('DEPOSIT'));
 
   // Valores e histórico são só do administrador (o funcionário fecha às cegas).
   if (isAdmin) {
@@ -563,12 +575,93 @@ function paintCashLive(s) {
   box.append(
     stat('Dinheiro esperado na gaveta', formatMoney(s.expectedAmount)),
     stat('Vendas em dinheiro', formatMoney(s.totalsByPaymentMethod.CASH)),
+    stat('Suprimentos', formatMoney(s.depositsTotal)),
+    stat('Sangrias', formatMoney(s.withdrawalsTotal)),
     stat('Pix', formatMoney(s.totalsByPaymentMethod.PIX)),
     stat('Débito', formatMoney(s.totalsByPaymentMethod.DEBIT_CARD)),
     stat('Crédito', formatMoney(s.totalsByPaymentMethod.CREDIT_CARD)),
     stat(`Total vendido (${s.salesCount})`, formatMoney(s.salesTotal)),
   );
   box.hidden = false;
+  if (s.movements.length) {
+    const wrap = document.getElementById('cash-movements');
+    wrap.append(el('h3', {}, 'Sangrias e suprimentos'), movementsTable(s.movements));
+    wrap.hidden = false;
+  }
+}
+
+const MOVEMENT_LABELS = { WITHDRAWAL: 'Sangria', DEPOSIT: 'Suprimento' };
+
+function movementsTable(movements) {
+  return el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, [
+    el('thead', {}, el('tr', {}, ['Hora', 'Tipo', 'Valor', 'Motivo', 'Quem'].map((h) => el('th', {}, h)))),
+    el('tbody', {}, movements.map((m) => el('tr', {}, [
+      el('td', {}, formatDateTime(m.createdAt)),
+      el('td', {}, MOVEMENT_LABELS[m.type]),
+      el('td', {}, `${m.type === 'WITHDRAWAL' ? '−' : '+'} ${formatMoney(m.amount)}`),
+      el('td', {}, m.reason),
+      el('td', {}, m.createdBy),
+    ]))),
+  ]));
+}
+
+// Como o dinheiro esperado na gaveta se forma (só o ADMIN recebe esses valores).
+const cashBreakdown = (s) => [
+  ['Fundo de troco', formatMoney(s.openingAmount)],
+  ['Vendas em dinheiro', `+ ${formatMoney(s.totalsByPaymentMethod.CASH)}`],
+  ['Suprimentos', `+ ${formatMoney(s.depositsTotal)}`],
+  ['Sangrias', `− ${formatMoney(s.withdrawalsTotal)}`],
+  ['Dinheiro esperado', formatMoney(s.expectedAmount)],
+];
+
+// Sangria (dinheiro que sai da gaveta) ou suprimento (troco que entra), com motivo.
+function openCashMovementModal(type) {
+  const modal = openModal('tpl-cash-movement');
+  const form = document.getElementById('cash-move-form');
+  const amount = document.getElementById('cash-move-amount');
+  const reason = document.getElementById('cash-move-reason');
+  const msg = document.getElementById('cash-move-msg');
+  let chosen = type;
+  const paint = () => form.querySelectorAll('[data-type]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.type === chosen)));
+  form.querySelector('.pay-grid').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-type]');
+    if (!btn) return;
+    chosen = btn.dataset.type;
+    paint();
+  });
+  paint();
+  amount.focus();
+  document.getElementById('cash-move-cancel').addEventListener('click', () => closeModal(modal));
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    msg.hidden = true;
+    const cents = parseMoneyCents(amount.value);
+    const why = reason.value.trim();
+    if (!cents || !why) {
+      msg.textContent = !cents ? 'Informe um valor maior que zero, ex: 50,00.' : 'Informe o motivo.';
+      msg.hidden = false;
+      return;
+    }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      const m = await api.post('/cash-sessions/current/movements', { type: chosen, amount: cents / 100, reason: why });
+      closeModal(modal);
+      await afterCashChange();
+      const notice = document.getElementById('cash-notice');
+      if (notice) {
+        notice.textContent = m.type === 'WITHDRAWAL' ? `Sangria de ${formatMoney(m.amount)} registrada.` : `Suprimento de ${formatMoney(m.amount)} registrado.`;
+        notice.hidden = false;
+      }
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.hidden = false;
+      if (err.status === 404) await afterCashChange(); // o caixa foi fechado em outro aparelho
+    } finally {
+      submit.disabled = false;
+    }
+  });
 }
 
 function differenceBadge(diff) {
@@ -615,7 +708,7 @@ function openCashOpenModal() {
   });
 }
 
-function openCashCloseModal() {
+async function openCashCloseModal() {
   const modal = openModal('tpl-cash-close');
   const input = document.getElementById('cash-counted');
   input.focus();
@@ -651,6 +744,33 @@ function openCashCloseModal() {
       submit.disabled = false;
     }
   });
+
+  // O ADMIN fecha vendo o resumo e a sobra/falta enquanto digita; o funcionário
+  // conta às cegas (não recebe o esperado da API).
+  if (currentUser.role !== 'ADMIN') return;
+  const live = await refreshCashStatus().catch(() => null); // números de agora, não os da tela
+  if (!live || !input.isConnected) return;
+  const summary = document.getElementById('cash-close-summary');
+  [
+    ...cashBreakdown(live),
+    ['Pix', formatMoney(live.totalsByPaymentMethod.PIX)],
+    ['Débito', formatMoney(live.totalsByPaymentMethod.DEBIT_CARD)],
+    ['Crédito', formatMoney(live.totalsByPaymentMethod.CREDIT_CARD)],
+    [`Total vendido (${live.salesCount} vendas)`, formatMoney(live.salesTotal)],
+  ].forEach(([label, value]) => summary.append(el('dt', {}, label), el('dd', {}, value)));
+  summary.hidden = false;
+  const diffLine = document.getElementById('cash-close-diff');
+  const paintDiff = () => {
+    const cents = parseMoneyCents(input.value);
+    diffLine.className = 'change-line';
+    diffLine.textContent = '';
+    if (cents === null) return;
+    const diff = cents - Math.round(live.expectedAmount * 100);
+    diffLine.textContent = diff === 0 ? 'Sem diferença' : diff < 0 ? `Falta ${formatMoney(-diff / 100)}` : `Sobra ${formatMoney(diff / 100)}`;
+    diffLine.classList.add(diff === 0 ? 'ok' : diff < 0 ? 'bad' : 'warn');
+  };
+  input.addEventListener('input', paintDiff);
+  paintDiff();
 }
 
 // Resumo do caixa. Sem `expectedAmount` na resposta (funcionário), é o
@@ -668,9 +788,7 @@ function openCashSummary(session, title) {
     const rows = [
       ['Aberto', `${formatDateTime(session.openedAt)} por ${session.openedBy}`],
       ['Fechado', session.closedAt ? `${formatDateTime(session.closedAt)} por ${session.closedBy}` : 'Ainda aberto'],
-      ['Fundo de troco', formatMoney(session.openingAmount)],
-      ['Vendas em dinheiro', formatMoney(session.totalsByPaymentMethod.CASH)],
-      ['Dinheiro esperado', formatMoney(session.expectedAmount)],
+      ...cashBreakdown(session),
       ['Dinheiro contado', session.countedAmount === null ? '—' : formatMoney(session.countedAmount)],
       ['Diferença', differenceBadge(session.difference)],
       ['Pix', formatMoney(session.totalsByPaymentMethod.PIX)],
@@ -682,6 +800,7 @@ function openCashSummary(session, title) {
     const list = el('dl', { class: 'summary-list' });
     rows.forEach(([label, value]) => list.append(el('dt', {}, label), el('dd', {}, value)));
     body.append(list);
+    if (session.movements?.length) body.append(el('h3', {}, 'Sangrias e suprimentos'), movementsTable(session.movements));
   }
   document.getElementById('cash-summary-ok').addEventListener('click', () => closeModal(modal));
 }

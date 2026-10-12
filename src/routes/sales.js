@@ -45,8 +45,11 @@ router.post('/', validate(saleSchema), async (req, res) => {
     // venda terminar antes de somar o caixa, e uma venda que chega depois do
     // fechamento já não o encontra aberto. Vendas não se bloqueiam entre si.
     const [openSession] = await tx.$queryRaw`SELECT "id" FROM "CashSession" WHERE "isOpen" = true FOR SHARE`;
+    // Sem caixa a venda ficaria fora de qualquer conciliação; o servidor barra também
+    // a tela que ainda achava o caixa aberto (fechado em outro aparelho).
+    if (!openSession) throw httpError(409, 'Caixa fechado: abra o caixa antes de vender.');
     const created = await tx.sale.create({
-      data: { sellerId: req.user.sub, totalAmount: '0', paymentMethod, cashSessionId: openSession?.id ?? null },
+      data: { sellerId: req.user.sub, totalAmount: '0', paymentMethod, cashSessionId: openSession.id },
     });
 
     // Uma única consulta para todos os itens, em vez de um SELECT por item

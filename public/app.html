@@ -76,7 +76,7 @@
   <template id="tpl-vendas">
     <section>
       <div id="sale-cash-warning" class="banner warn" hidden>
-        <span>Caixa fechado: as vendas não vão entrar em nenhum fechamento de caixa.</span>
+        <span>Caixa fechado: abra o caixa para finalizar vendas.</span>
         <button type="button" id="sale-open-cash-btn" class="btn-xl">Abrir caixa</button>
       </div>
       <h2>Nova venda</h2>
@@ -275,10 +275,14 @@
         <p id="cash-state" class="cash-state"></p>
         <p id="cash-state-meta" class="muted"></p>
         <div id="cash-live" class="grid-cards cash-live" hidden></div>
+        <div id="cash-movements" hidden></div>
         <div class="form-actions">
           <button type="button" id="cash-open-btn" class="btn-xl" hidden>Abrir caixa</button>
+          <button type="button" id="cash-withdraw-btn" class="btn-xl secondary" hidden>Sangria</button>
+          <button type="button" id="cash-deposit-btn" class="btn-xl secondary" hidden>Suprimento</button>
           <button type="button" id="cash-close-btn" class="btn-xl danger" hidden>Fechar caixa</button>
         </div>
+        <p id="cash-notice" class="success" hidden></p>
       </div>
 
       <div id="cash-history-section" hidden>
@@ -319,8 +323,10 @@
     <form id="cash-close-form" class="card op">
       <h3>Fechar o caixa</h3>
       <p class="muted">Conte todo o dinheiro da gaveta, inclusive o fundo de troco, e informe o total. Pix e cartões não entram nessa contagem.</p>
+      <dl id="cash-close-summary" class="summary-list" hidden></dl>
       <label for="cash-counted">Dinheiro contado na gaveta (R$)</label>
       <input id="cash-counted" class="field-xl" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" required />
+      <p id="cash-close-diff" class="change-line" aria-live="polite"></p>
       <label for="cash-notes">Observações (opcional)</label>
       <textarea id="cash-notes" class="field-xl" rows="2" maxlength="500"></textarea>
       <div class="form-actions">
@@ -328,6 +334,25 @@
         <button type="button" id="cash-close-cancel" class="btn-xl secondary">Cancelar</button>
       </div>
       <p id="cash-close-msg" class="error" hidden></p>
+    </form>
+  </template>
+
+  <template id="tpl-cash-movement">
+    <form id="cash-move-form" class="card op">
+      <h3>Sangria ou suprimento</h3>
+      <div class="pay-grid" role="group" aria-label="Tipo de movimentação">
+        <button type="button" class="pay-btn" data-type="WITHDRAWAL" aria-pressed="false">Sangria <small>(retirada)</small></button>
+        <button type="button" class="pay-btn" data-type="DEPOSIT" aria-pressed="false">Suprimento <small>(troco)</small></button>
+      </div>
+      <label for="cash-move-amount">Valor (R$)</label>
+      <input id="cash-move-amount" class="field-xl" type="text" inputmode="decimal" autocomplete="off" placeholder="0,00" required />
+      <label for="cash-move-reason">Motivo</label>
+      <input id="cash-move-reason" class="field-xl" maxlength="255" autocomplete="off" placeholder="Ex.: depósito no banco, mais troco" required />
+      <div class="form-actions">
+        <button type="submit" class="btn-xl">Registrar</button>
+        <button type="button" id="cash-move-cancel" class="btn-xl secondary">Cancelar</button>
+      </div>
+      <p id="cash-move-msg" class="error" hidden></p>
     </form>
   </template>
 

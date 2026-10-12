@@ -95,9 +95,10 @@ run(async () => {
   await page.screenshot({ path: shot('04-caixa-admin.png'), fullPage: true });
 
   await page.click('#cash-close-btn');
-  await page.waitForSelector('#cash-close-form');
-  check(!norm(await page.textContent('#cash-close-form')).includes('107,50'), 'a tela de contagem não mostra o valor esperado');
+  await page.waitForSelector('#cash-close-summary:not([hidden])');
+  check(norm(await page.innerText('#cash-close-summary')).includes('Dinheiro esperado R$ 107,50'), 'o administrador fecha vendo o resumo com o esperado (R$ 107,50)');
   await page.fill('#cash-counted', '105');
+  check(norm(await page.textContent('#cash-close-diff')) === 'Falta R$ 2,50', 'a quebra aparece enquanto digita (falta R$ 2,50)');
   page.once('dialog', (d) => d.accept());
   await page.click('#cash-close-form button[type="submit"]');
   await page.waitForSelector('#cash-summary-body');
@@ -158,6 +159,7 @@ run(async () => {
   check(await cashierPage.isHidden('button[data-tab="estoque"]'), 'funcionário não vê a aba Estoque');
   await cashierPage.click('#cash-close-btn');
   await cashierPage.fill('#cash-counted', '50');
+  check(await cashierPage.isHidden('#cash-close-summary') && norm(await cashierPage.textContent('#cash-close-diff')) === '', 'o funcionário conta às cegas: sem resumo nem quebra na tela');
   cashierPage.once('dialog', (d) => d.accept());
   await cashierPage.click('#cash-close-form button[type="submit"]');
   await cashierPage.waitForSelector('#cash-summary-body');

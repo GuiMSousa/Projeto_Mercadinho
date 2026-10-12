@@ -48,6 +48,8 @@ before(async () => {
     body: { email: 'admin.test@example.com', password: 'TesteSenha123!' },
   });
   assert.equal(login.status, 200, 'login do admin de teste deveria funcionar');
+  // Vender exige caixa aberto: os testes de venda usam este; os de caixa fecham e reabrem.
+  assert.equal((await openCash(adminJar, 0)).status, 201);
 });
 
 after(async () => {
@@ -725,6 +727,7 @@ const closeCash = (jar, countedAmount, notes) =>
 
 test('caixa: abertura, vendas por forma de pagamento e fechamento com conciliação', async () => {
   const product = await newProduct('Produto Caixa', { initialStock: 100, salePrice: 10 });
+  await closeCash(adminJar, 0); // o caixa aberto pela suíte
   const open = await openCash(adminJar, 100);
   assert.equal(open.status, 201);
   assert.equal(open.body.status, 'OPEN');
@@ -762,18 +765,24 @@ test('caixa: abertura, vendas por forma de pagamento e fechamento com conciliaç
   assert.equal((await request(baseUrl, adminJar, '/api/cash-sessions/current')).status, 404);
   assert.equal((await closeCash(adminJar, 0)).status, 404);
 
-  // Com o caixa fechado a venda é aceita, mas fica fora de qualquer fechamento.
-  assert.equal((await sell(adminJar, product.id, 1)).status, 201);
+  // Com o caixa fechado a venda é recusada e o estoque não muda.
+  const stockBefore = (await request(baseUrl, adminJar, `/api/products/${product.id}`)).body.currentStock;
+  const refused = await sell(adminJar, product.id, 1);
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /Caixa fechado/);
+  assert.equal((await request(baseUrl, adminJar, `/api/products/${product.id}`)).body.currentStock, stockBefore);
   const detail = await request(baseUrl, adminJar, `/api/cash-sessions/${open.body.id}`);
   assert.deepEqual([detail.body.expectedAmount, detail.body.difference, detail.body.salesCount, detail.body.salesTotal], [150, -10, 2, 80]);
 
   const list = await request(baseUrl, adminJar, '/api/cash-sessions?pageSize=5');
   assert.equal(list.body.sessions[0].id, open.body.id);
   assert.equal((await request(baseUrl, adminJar, '/api/cash-sessions/00000000-0000-4000-8000-000000000000')).status, 404);
+  assert.equal((await openCash(adminJar, 0)).status, 201);
 });
 
 test('caixa: fechamento cego quando quem fecha é o funcionário', async () => {
   const counter = await cashierJar();
+  await closeCash(adminJar, 0);
   assert.equal((await openCash(counter, 20)).status, 201);
   const close = await closeCash(counter, 25);
   assert.equal(close.status, 200);
@@ -782,15 +791,17 @@ test('caixa: fechamento cego quando quem fecha é o funcionário', async () => {
 
   const detail = await request(baseUrl, adminJar, `/api/cash-sessions/${close.body.id}`);
   assert.deepEqual([detail.body.expectedAmount, detail.body.difference], [20, 5], 'o administrador vê a sobra');
+  assert.equal((await openCash(adminJar, 0)).status, 201);
 });
 
-test('caixa: vendas simultâneas ao fechamento entram todas no esperado gravado', async () => {
+test('caixa: vendas simultâneas ao fechamento entram no esperado gravado ou são recusadas', async () => {
   // Vendas de 10 itens dos mesmos produtos: cada transação é longa e as seguintes
   // esperam na fila dos locks de produto já ligadas ao caixa — é nessa janela que
   // um fechamento sem lock somaria antes delas terminarem.
   const products = [];
   for (let i = 0; i < 10; i += 1) products.push(await newProduct(`Produto Caixa Corrida ${i}`, { initialStock: 1000, salePrice: 1 }));
   const items = products.map((p) => ({ productId: p.id, quantity: 1 }));
+  await closeCash(adminJar, 0);
   const open = await openCash(adminJar, 0);
   assert.equal(open.status, 201);
 
@@ -798,7 +809,9 @@ test('caixa: vendas simultâneas ao fechamento entram todas no esperado gravado'
   await new Promise((resolve) => setTimeout(resolve, 150));
   const close = closeCash(adminJar, 0);
   const results = await Promise.all([...sales, close]);
-  assert.ok(results.every((r) => r.status === 200 || r.status === 201), JSON.stringify(results.map((r) => [r.status, r.body && r.body.error])));
+  // A venda que chega depois do fechamento não encontra caixa aberto: 409, nada gravado.
+  assert.equal(results.at(-1).status, 200);
+  assert.ok(results.slice(0, -1).every((r) => r.status === 201 || r.status === 409), JSON.stringify(results.map((r) => [r.status, r.body && r.body.error])));
 
   const linked = await prisma.sale.aggregate({
     where: { cashSessionId: open.body.id, canceled: false, paymentMethod: 'CASH' },
@@ -806,6 +819,9 @@ test('caixa: vendas simultâneas ao fechamento entram todas no esperado gravado'
   });
   const session = await prisma.cashSession.findUnique({ where: { id: open.body.id } });
   assert.equal(Number(session.expectedAmount), Number(linked._sum.totalAmount ?? 0), 'toda venda ligada ao caixa está no esperado gravado');
+  const accepted = results.slice(0, -1).filter((r) => r.status === 201).length;
+  assert.equal(await prisma.sale.count({ where: { cashSessionId: open.body.id } }), accepted, 'toda venda aceita ficou ligada ao caixa');
+  assert.equal((await openCash(adminJar, 0)).status, 201);
 });
 
 test('recibo: GET /api/settings devolve o nome do estabelecimento a quem está logado', async () => {
@@ -824,4 +840,39 @@ test('venda: o total é a soma dos subtotais arredondados (o recibo fecha a cont
   assert.equal(res.status, 201, JSON.stringify(res.body));
   assert.deepEqual(res.body.items.map((i) => i.subtotal), [0.66, 0.66, 0.66]);
   assert.equal(res.body.totalAmount, 1.98); // sem arredondar item a item dava 1,99
+});
+
+test('caixa: sangria e suprimento entram no esperado, com motivo obrigatório', async () => {
+  const product = await newProduct('Produto Sangria', { initialStock: 50, salePrice: 10 });
+  const counter = await cashierJar();
+  const move = (jar, body) => request(baseUrl, jar, '/api/cash-sessions/current/movements', { method: 'POST', body });
+  await closeCash(adminJar, 0);
+  assert.equal((await move(adminJar, { type: 'WITHDRAWAL', amount: 10, reason: 'Sem caixa' })).status, 404, 'sem caixa aberto não há movimentação');
+
+  assert.equal((await openCash(adminJar, 100)).status, 201);
+  assert.equal((await sell(adminJar, product.id, 5)).status, 201); // R$ 50 em dinheiro
+  const withdrawal = await move(adminJar, { type: 'WITHDRAWAL', amount: 60, reason: '  Depósito no banco  ' });
+  assert.equal(withdrawal.status, 201);
+  assert.deepEqual([withdrawal.body.type, withdrawal.body.amount, withdrawal.body.reason, withdrawal.body.createdBy], ['WITHDRAWAL', 60, 'Depósito no banco', 'Admin Teste']);
+  assert.equal((await move(counter, { type: 'DEPOSIT', amount: 20, reason: 'Mais troco' })).status, 201, 'o funcionário também registra');
+
+  assert.equal((await move(adminJar, { type: 'WITHDRAWAL', amount: 5, reason: '   ' })).status, 400, 'motivo obrigatório');
+  assert.equal((await move(adminJar, { type: 'WITHDRAWAL', amount: 0, reason: 'Zero' })).status, 400, 'valor maior que zero');
+  assert.equal((await move(adminJar, { type: 'GORJETA', amount: 5, reason: 'Tipo inválido' })).status, 400);
+
+  const current = await request(baseUrl, adminJar, '/api/cash-sessions/current');
+  assert.deepEqual([current.body.expectedAmount, current.body.depositsTotal, current.body.withdrawalsTotal], [110, 20, 60], '100 + 50 + 20 - 60');
+  assert.deepEqual(current.body.movements.map((m) => [m.type, m.amount, m.reason, m.createdBy]), [
+    ['WITHDRAWAL', 60, 'Depósito no banco', 'Admin Teste'],
+    ['DEPOSIT', 20, 'Mais troco', 'Caixa Balcão'],
+  ]);
+  const counterView = await request(baseUrl, counter, '/api/cash-sessions/current');
+  assert.ok(!('movements' in counterView.body) && !('withdrawalsTotal' in counterView.body), 'fechamento cego: o funcionário não vê os valores');
+
+  const close = await closeCash(adminJar, 105);
+  assert.deepEqual([close.body.expectedAmount, close.body.difference, close.body.withdrawalsTotal, close.body.depositsTotal], [110, -5, 60, 20]);
+  const list = await request(baseUrl, adminJar, '/api/cash-sessions?pageSize=1');
+  assert.deepEqual([list.body.sessions[0].id, list.body.sessions[0].withdrawalsTotal], [close.body.id, 60]);
+  assert.equal((await move(adminJar, { type: 'DEPOSIT', amount: 1, reason: 'Depois de fechar' })).status, 404);
+  assert.equal((await openCash(adminJar, 0)).status, 201);
 });

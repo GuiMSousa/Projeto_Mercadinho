@@ -15,6 +15,7 @@ run(async () => {
   await api('/products', { method: 'POST', body: { name: names.rice, unit: 'UN', costPrice: 5, salePrice: 7.5, initialStock: 50 } });
   await api('/products', { method: 'POST', body: { name: names.cheese, unit: 'KG', costPrice: 20, salePrice: 39.9, initialStock: 10 } });
   const { storeName } = await api('/settings');
+  await api('/cash-sessions', { method: 'POST', body: { openingAmount: 0 } }).catch(() => {}); // vender exige caixa aberto (409 = já aberto)
 
   const browser = await launch();
   const page = await newPage(browser, { initScript: stubPrint });
