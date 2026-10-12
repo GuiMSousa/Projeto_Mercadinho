@@ -17,7 +17,7 @@ const ADMIN = { email: 'admin.test@example.com', password: 'TesteSenha123!' };
 const CASHIER = { email: 'caixa.balcao@example.com', password: 'SenhaBalcao123!' };
 const port = process.env.E2E_PORT || '3999';
 const base = `http://localhost:${port}`;
-const etapas = process.argv.slice(2).length ? process.argv.slice(2) : ['etapa1', 'etapa2', 'etapa3'];
+const etapas = process.argv.slice(2).length ? process.argv.slice(2) : ['etapa1', 'etapa2', 'etapa3', 'etapa4'];
 
 const exitCode = (child) => new Promise((resolve) => child.on('exit', (code) => resolve(code ?? 1)));
 

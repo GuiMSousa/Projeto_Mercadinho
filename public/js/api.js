@@ -1,3 +1,11 @@
+// PWA (instalar na tela inicial). O navegador só oferece service worker em https ou
+// localhost; por http://IP-da-rede a página segue igual, sem ele.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('Service worker não registrado:', err));
+  });
+}
+
 // Wrapper de fetch: sempre envia cookies (sessão), sempre inclui o cabeçalho
 // que nossa defesa anti-CSRF exige em requisições que alteram estado, e
 // padroniza o tratamento de erros da API.
