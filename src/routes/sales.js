@@ -57,7 +57,10 @@ router.post('/', validate(saleSchema), async (req, res) => {
     const products = await tx.product.findMany({ where: { id: { in: productIds } } });
     const productById = new Map(products.map((p) => [p.id, p]));
 
-    let total = 0;
+    // Em centavos: cada item é arredondado e o total é a soma dos itens, como no cupom.
+    // Somar os valores sem arredondar fazia o total diferir da soma do recibo em R$ 0,01
+    // com quantidade fracionada (ex.: 0,333 kg).
+    let totalCents = 0;
     const saleItems = [];
 
     for (const item of items) {
@@ -65,8 +68,10 @@ router.post('/', validate(saleSchema), async (req, res) => {
       if (!product || !product.active) throw httpError(404, 'Um dos produtos da venda não foi encontrado.');
 
       const unitPrice = Number(product.salePrice);
-      const subtotal = unitPrice * item.quantity;
-      total += subtotal;
+      const subtotalCents = Math.round(unitPrice * item.quantity * 100);
+      totalCents += subtotalCents;
+      const subtotal = subtotalCents / 100;
+      const total = totalCents / 100;
       // Barreira de segurança: nunca deixa o total computado em memória chegar
       // perto da capacidade da coluna numeric(12,2) do banco. Sem isso, uma
       // combinação extrema de preço × quantidade × itens estouraria a coluna
@@ -102,7 +107,7 @@ router.post('/', validate(saleSchema), async (req, res) => {
 
     return tx.sale.update({
       where: { id: created.id },
-      data: { totalAmount: total.toFixed(2) },
+      data: { totalAmount: (totalCents / 100).toFixed(2) },
       include: { items: { include: { product: { select: { name: true, unit: true } } } } },
     });
   }, { timeout: 15_000, maxWait: 5_000 });

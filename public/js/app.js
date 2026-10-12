@@ -4,6 +4,7 @@ let cart = []; // { productId, name, unit, price, quantity }
 let saleInFlight = false;
 let payMethod = null; // forma de pagamento escolhida para a venda em andamento
 let cashSession = null; // caixa aberto agora, ou null
+let storeName = ''; // nome do estabelecimento no recibo (GET /api/settings)
 let productsPage = 1;
 let productUrgencyFilter = null; // RED | YELLOW | GREEN, ou null para todos
 let movementsPage = 1;
@@ -107,6 +108,7 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   userName.title = userName.textContent;
   document.getElementById('user-avatar').textContent = currentUser.name.trim().charAt(0).toUpperCase();
   document.body.classList.toggle('role-admin', currentUser.role === 'ADMIN');
+  api.get('/settings').then((s) => { storeName = s.storeName; }).catch(() => {}); // só o recibo usa
 
   let cashKnown = false;
   try {
@@ -401,27 +403,65 @@ async function confirmSale() {
 }
 
 // O troco não é gravado no servidor: vem do valor entregue informado na tela.
-function openReceipt(sale, receivedCents = null) {
-  const modal = openModal('tpl-receipt');
-  const when = formatDateTime(sale.createdAt);
-  document.getElementById('receipt-meta').textContent = `${when} · ${sale.items.length} item(ns)`;
-  const body = document.getElementById('receipt-items');
-  body.innerHTML = '';
-  sale.items.forEach((item) => {
-    body.appendChild(el('tr', {}, [
-      el('td', {}, item.product),
-      el('td', {}, `${item.quantity} ${item.unit || ''}`.trim()),
-      el('td', {}, formatMoney(item.unitPrice)),
-      el('td', {}, formatMoney(item.subtotal)),
-    ]));
-  });
-  document.getElementById('receipt-total').textContent = formatMoney(sale.totalAmount);
+// Dados do recibo, os mesmos na tela, na impressão e no WhatsApp. O PDV não dá desconto:
+// "Descontos" é a soma dos itens menos o total gravado (R$ 0,00), em centavos.
+function receiptData(sale, receivedCents = null) {
+  const cents = (value) => Math.round(Number(value) * 100);
+  const subtotalCents = sale.items.reduce((sum, item) => sum + cents(item.subtotal), 0);
+  const totalCents = cents(sale.totalAmount);
   let payment = `Pagamento: ${PAYMENT_LABELS[sale.paymentMethod] || sale.paymentMethod}`;
   if (receivedCents !== null) {
-    const change = receivedCents - Math.round(sale.totalAmount * 100);
+    const change = receivedCents - totalCents;
     payment += ` · Recebido ${formatMoney(receivedCents / 100)} · ${change >= 0 ? `Troco ${formatMoney(change / 100)}` : `Faltam ${formatMoney(-change / 100)}`}`;
   }
-  document.getElementById('receipt-payment').textContent = payment;
+  return {
+    store: storeName,
+    when: formatDateTime(sale.createdAt),
+    items: sale.items.map((item) => ({
+      name: item.product,
+      detail: `${`${Number(item.quantity).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} ${item.unit || ''}`.trim()} × ${formatMoney(item.unitPrice)}`,
+      subtotal: formatMoney(item.subtotal),
+    })),
+    subtotal: formatMoney(subtotalCents / 100),
+    discount: formatMoney((subtotalCents - totalCents) / 100),
+    total: formatMoney(totalCents / 100),
+    payment,
+  };
+}
+
+// Resumo da venda para o WhatsApp (*negrito* é a marcação do próprio WhatsApp).
+function receiptWhatsAppText(r) {
+  return [
+    ...(r.store ? [`*${r.store}*`] : []),
+    r.when,
+    '',
+    ...r.items.map((item) => `${item.name}\n  ${item.detail} = ${item.subtotal}`),
+    '',
+    `Subtotal: ${r.subtotal}`,
+    `Descontos: ${r.discount}`,
+    `*Total: ${r.total}*`,
+    r.payment,
+    '',
+    'Obrigado pela preferência!',
+  ].join('\n');
+}
+
+function openReceipt(sale, receivedCents = null) {
+  const modal = openModal('tpl-receipt');
+  const r = receiptData(sale, receivedCents);
+  const store = document.getElementById('receipt-store');
+  store.textContent = r.store;
+  store.hidden = !r.store;
+  document.getElementById('receipt-meta').textContent = r.when;
+  document.getElementById('receipt-items').append(...r.items.map((item) => el('li', {}, [
+    el('span', { class: 'receipt-name' }, item.name),
+    el('span', { class: 'receipt-row' }, [el('span', {}, item.detail), el('span', {}, item.subtotal)]),
+  ])));
+  document.getElementById('receipt-subtotal').textContent = r.subtotal;
+  document.getElementById('receipt-discount').textContent = r.discount;
+  document.getElementById('receipt-total').textContent = r.total;
+  document.getElementById('receipt-payment').textContent = r.payment;
+  document.getElementById('receipt-wa-link').href = `https://wa.me/?text=${encodeURIComponent(receiptWhatsAppText(r))}`;
   document.getElementById('receipt-print-btn').addEventListener('click', () => window.print());
   document.getElementById('receipt-close-btn').addEventListener('click', () => closeModal(modal));
 }

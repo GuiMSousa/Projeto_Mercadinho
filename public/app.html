@@ -247,17 +247,23 @@
 
   <template id="tpl-receipt">
     <div class="card receipt-card" id="receipt-card">
-      <h3>Venda confirmada</h3>
-      <p class="muted" id="receipt-meta"></p>
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>Produto</th><th>Qtd</th><th>Preço</th><th>Subtotal</th></tr></thead>
-        <tbody id="receipt-items"></tbody>
-      </table></div>
-      <p class="cart-total">Total: <strong id="receipt-total">R$ 0,00</strong></p>
-      <p id="receipt-payment" class="receipt-payment"></p>
-      <div class="form-actions no-print">
-        <button type="button" id="receipt-print-btn">Imprimir</button>
-        <button type="button" id="receipt-close-btn" class="secondary">Nova venda</button>
+      <h3 class="no-print">✔ Venda confirmada</h3>
+      <div class="receipt" id="receipt">
+        <p class="receipt-store" id="receipt-store"></p>
+        <p class="receipt-center" id="receipt-meta"></p>
+        <ul class="receipt-items" id="receipt-items"></ul>
+        <dl class="receipt-totals">
+          <div><dt>Subtotal</dt><dd id="receipt-subtotal"></dd></div>
+          <div><dt>Descontos</dt><dd id="receipt-discount"></dd></div>
+          <div class="receipt-grand"><dt>Total</dt><dd id="receipt-total"></dd></div>
+        </dl>
+        <p class="receipt-payment" id="receipt-payment"></p>
+        <p class="receipt-center receipt-thanks">Obrigado pela preferência!</p>
+      </div>
+      <div class="receipt-actions no-print">
+        <button type="button" id="receipt-print-btn" class="btn-xl">Imprimir recibo</button>
+        <a id="receipt-wa-link" class="button-link whatsapp btn-xl" target="_blank" rel="noopener">Enviar por WhatsApp</a>
+        <button type="button" id="receipt-close-btn" class="btn-xl secondary">Nova venda</button>
       </div>
     </div>
   </template>

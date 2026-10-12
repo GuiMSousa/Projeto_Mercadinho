@@ -22,6 +22,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: intEnv('PORT', 3000),
+  // Nome impresso no recibo da venda.
+  storeName: process.env.STORE_NAME || 'Mercadinho',
 
   jwtSecret: required('JWT_SECRET', 'dev-only-insecure-secret-troque-em-producao'),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',

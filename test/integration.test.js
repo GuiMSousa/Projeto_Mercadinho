@@ -807,3 +807,21 @@ test('caixa: vendas simultâneas ao fechamento entram todas no esperado gravado'
   const session = await prisma.cashSession.findUnique({ where: { id: open.body.id } });
   assert.equal(Number(session.expectedAmount), Number(linked._sum.totalAmount ?? 0), 'toda venda ligada ao caixa está no esperado gravado');
 });
+
+test('recibo: GET /api/settings devolve o nome do estabelecimento a quem está logado', async () => {
+  for (const jar of [adminJar, await cashierJar()]) {
+    const res = await request(baseUrl, jar, '/api/settings');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { storeName: config.storeName });
+  }
+  assert.equal((await request(baseUrl, makeCookieJar(), '/api/settings')).status, 401);
+});
+
+test('venda: o total é a soma dos subtotais arredondados (o recibo fecha a conta com quilo fracionado)', async () => {
+  const products = [];
+  for (const n of [1, 2, 3]) products.push(await newProduct(`Produto Granel ${n}`, { unit: 'KG', salePrice: 1.99, initialStock: 5 }));
+  const res = await request(baseUrl, adminJar, '/api/sales', { method: 'POST', body: { items: products.map((p) => ({ productId: p.id, quantity: 0.333 })) } });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.deepEqual(res.body.items.map((i) => i.subtotal), [0.66, 0.66, 0.66]);
+  assert.equal(res.body.totalAmount, 1.98); // sem arredondar item a item dava 1,99
+});

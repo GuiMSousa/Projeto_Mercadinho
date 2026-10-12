@@ -323,7 +323,7 @@ button.small { padding: 6px 12px; font-size: 0.8125rem; margin: 0; box-shadow: n
   margin: 0;
   box-shadow: var(--shadow-md);
 }
-.modal-backdrop .receipt-card { max-width: 560px; }
+.modal-backdrop .receipt-card { max-width: 440px; }
 
 .pager {
   display: flex;
@@ -351,8 +351,15 @@ button.small { padding: 6px 12px; font-size: 0.8125rem; margin: 0; box-shadow: n
     max-width: none;
     box-shadow: none;
     border: none;
+    padding: 0;
   }
+  body { padding: 0; background: #fff; }
+  body::before { display: none; }
+  /* Bobina térmica: a largura vem do papel escolhido na impressora (58 ou 80 mm);
+     numa folha comum o recibo sai com 80 mm, no canto. Preto puro, sem fundo. */
+  .modal-backdrop .receipt { max-width: 80mm; margin: 0; padding: 0; border: none; font-size: 12px; color: #000; }
 }
+@page { margin: 3mm; }
 
 /* Importação de planilha */
 .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
@@ -487,7 +494,26 @@ textarea.field-xl { min-height: 100px; }
 .summary-list dt { color: var(--text-muted); }
 .summary-list dd { margin: 0; font-weight: 700; text-align: right; }
 .summary-lead { font-size: 20pt; font-weight: 700; }
-.receipt-payment { margin: 4px 0 0; font-weight: 600; }
+/* Recibo: o mesmo bloco na tela (prévia do cupom) e na impressão. */
+.receipt { max-width: 80mm; margin: 0 auto 16px; padding: 16px; border: 1px dashed #cbd5e1; border-radius: var(--radius-sm); background: #fff; color: var(--text); font: 14px/1.4 "Courier New", Courier, monospace; }
+.receipt p { margin: 0; }
+.receipt-store { text-align: center; font-weight: 700; font-size: 1.15em; }
+.receipt-center { text-align: center; }
+.receipt-items { list-style: none; margin: 8px 0; padding: 8px 0; border-top: 1px dashed currentColor; border-bottom: 1px dashed currentColor; }
+.receipt-items li + li { margin-top: 6px; }
+.receipt-name { display: block; overflow-wrap: anywhere; }
+.receipt-row, .receipt-totals div { display: flex; justify-content: space-between; gap: 0 8px; }
+/* Na bobina estreita o subtotal desce inteiro, alinhado à direita, em vez de quebrar o preço. */
+.receipt-row { flex-wrap: wrap; }
+.receipt-row > :last-child { margin-left: auto; }
+.receipt-totals { margin: 0 0 8px; }
+.receipt-totals dd { margin: 0; white-space: nowrap; }
+.receipt-grand { font-weight: 700; font-size: 1.15em; }
+.receipt-payment { overflow-wrap: anywhere; }
+.receipt-thanks { margin-top: 8px !important; padding-top: 8px; border-top: 1px dashed currentColor; }
+.receipt-actions { display: grid; gap: 10px; }
+.receipt-actions > * { margin: 0; width: 100%; }
+.receipt-actions > a { display: flex; align-items: center; justify-content: center; font-size: 16pt; } /* .button-link vem depois e encolheria a fonte */
 
 .check { display: flex; align-items: center; gap: 12px; color: var(--text); font-weight: 500; cursor: pointer; }
 .check input { flex: none; width: 28px; height: 28px; }

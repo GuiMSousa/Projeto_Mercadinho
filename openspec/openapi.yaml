@@ -59,6 +59,8 @@ tags:
     description: >-
       Abertura e fechamento do caixa com conciliação do dinheiro. Fechamento cego para
       CASHIER; valores e histórico só para ADMIN. Spec `openspec/specs/cash-register`.
+  - name: Settings
+    description: Dados do estabelecimento para o recibo da venda. Spec `openspec/specs/sales`.
 
 paths:
   /api/auth/login:
@@ -1024,6 +1026,22 @@ paths:
                 examples: ["*Lista de compras — 11/10/2026*\n\n*Laticínios*\n- Leite Integral UHT 1L: tem 2 UN, mínimo 20\n\n1 produto(s) para repor.\n"]
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/settings:
+    get:
+      tags: [Settings]
+      operationId: getSettings
+      summary: Dados do estabelecimento
+      description: Nome impresso no recibo da venda (configuração `STORE_NAME`).
+      responses:
+        '200':
+          description: Dados do estabelecimento.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2229,6 +2247,13 @@ components:
           type: [number, 'null']
           description: '`null` quando não houve vendas na janela.'
 
+    Settings:
+      type: object
+      required: [storeName]
+      properties:
+        storeName:
+          type: string
+          example: Mercadinho São José
     ShoppingList:
       type: object
       required: [generatedAt, totalItems, items]

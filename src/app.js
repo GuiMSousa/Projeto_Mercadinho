@@ -19,6 +19,7 @@ const usersRoutes = require('./routes/users');
 const importsRoutes = require('./routes/imports');
 const shoppingListRoutes = require('./routes/shoppingList');
 const cashSessionsRoutes = require('./routes/cashSessions');
+const settingsRoutes = require('./routes/settings');
 
 const app = express();
 
@@ -73,6 +74,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/imports', importsRoutes);
 app.use('/api/shopping-list', shoppingListRoutes);
 app.use('/api/cash-sessions', cashSessionsRoutes);
+app.use('/api/settings', settingsRoutes);
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 // Fallback do leitor de código de barras: a CSP só aceita scripts de 'self', então nada de CDN.
