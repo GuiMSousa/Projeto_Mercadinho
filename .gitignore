@@ -9,3 +9,4 @@ coverage/
 Thumbs.db
 .claude/
 openspec/openapi.html
+test/e2e/shots/

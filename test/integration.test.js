@@ -488,6 +488,15 @@ const batchesOf = async (productId) => (await request(baseUrl, adminJar, `/api/s
 const sell = (jar, productId, quantity, paymentMethod) =>
   request(baseUrl, jar, '/api/sales', { method: 'POST', body: { items: [{ productId, quantity }], ...(paymentMethod && { paymentMethod }) } });
 
+test('busca: query acha o produto pelo código de barras exato, não por trecho', async () => {
+  const product = await newProduct('Produto Leitor', { barcode: '7891000100103' });
+  const exact = await request(baseUrl, adminJar, '/api/products?query=7891000100103');
+  assert.equal(exact.status, 200);
+  assert.deepEqual(exact.body.map((p) => p.id), [product.id]);
+  const partial = await request(baseUrl, adminJar, '/api/products?query=78910001');
+  assert.equal(partial.body.some((p) => p.id === product.id), false);
+});
+
 test('lotes: a venda baixa primeiro o lote que vence antes, e a soma dos lotes acompanha o saldo', async () => {
   const far = dayFromToday(60);
   const near = dayFromToday(10);

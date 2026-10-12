@@ -53,6 +53,7 @@ function openModal(templateId) {
 
 function closeModal(backdrop) {
   if (!backdrop) return;
+  if (backdrop._onClose) backdrop._onClose(); // ex.: desligar a câmera do leitor
   if (backdrop._onKeydown) document.removeEventListener('keydown', backdrop._onKeydown);
   backdrop.remove();
   document.body.style.overflow = '';
@@ -94,7 +95,9 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
     location.href = '/index.html';
     return;
   }
-  document.getElementById('user-name').textContent = `${currentUser.name} (${currentUser.role === 'ADMIN' ? 'admin' : 'caixa'})`;
+  const userName = document.getElementById('user-name');
+  userName.textContent = `${currentUser.name} (${currentUser.role === 'ADMIN' ? 'admin' : 'caixa'})`;
+  userName.title = userName.textContent;
   document.getElementById('user-avatar').textContent = currentUser.name.trim().charAt(0).toUpperCase();
   document.body.classList.toggle('role-admin', currentUser.role === 'ADMIN');
 
@@ -207,6 +210,18 @@ async function renderVendas() {
       if (products.length === 0) resultsBox.appendChild(el('div', { class: 'muted' }, 'Nenhum produto encontrado.'));
     }, 250);
   });
+
+  // Leitura contínua: cada código lido entra no carrinho e a câmera segue aberta para o próximo.
+  document.getElementById('sale-scan-btn').addEventListener('click', () => openScanner({
+    continuous: true,
+    onCode: async (code) => {
+      const product = await findProductByBarcode(code);
+      if (!product) return { ok: false, message: `Código ${code} não cadastrado.` };
+      addToCart(product);
+      const qty = cart.find((i) => i.productId === product.id).quantity;
+      return { ok: true, message: `✔ ${product.name} — ${qty} no carrinho. Pode passar o próximo.` };
+    },
+  }));
 
   document.getElementById('confirm-sale-btn').addEventListener('click', confirmSale);
 
@@ -925,6 +940,17 @@ async function renderEstoque() {
     adjSelect.appendChild(el('option', { value: p.id }, `${p.name} (${p.currentStock} ${p.unit})`));
   });
 
+  // Na entrada basta um código: seleciona o produto, fecha a câmera e vai para a quantidade.
+  document.getElementById('entry-scan-btn').addEventListener('click', () => openScanner({
+    onCode: (code) => {
+      const product = products.find((p) => barcodeVariants(code).includes(p.barcode));
+      if (!product) return { ok: false, message: `Código ${code} não cadastrado. Cadastre o produto em Produtos.` };
+      entrySelect.value = product.id;
+      document.getElementById('entry-qty').focus();
+      return { ok: true, message: `✔ ${product.name}` };
+    },
+  }));
+
   // Validade obrigatória — é ela que alimenta o PVPS e os alertas de vencimento.
   // Produto que não vence (limpeza, higiene) precisa ser marcado de propósito.
   const expiryInput = document.getElementById('entry-expiry');
@@ -1358,6 +1384,160 @@ function openUserForm(user) {
       msg.hidden = false;
     }
   });
+}
+
+// ---------- Leitor de código de barras (câmera) ----------
+const SCAN_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
+const SCAN_REPEAT_MS = 1500;
+const CAMERA_ERRORS = {
+  NotAllowedError: 'Acesso à câmera negado. Libere a câmera no cadeado da barra de endereço e tente de novo.',
+  NotFoundError: 'Nenhuma câmera encontrada neste aparelho.',
+  OverconstrainedError: 'Nenhuma câmera encontrada neste aparelho.',
+  NotReadableError: 'A câmera está em uso por outro programa.',
+};
+let scanAudio = null;
+let zxingLoading = null;
+
+// UPC-A (12 dígitos) é um EAN-13 que começa com 0: conforme o leitor, o mesmo
+// código chega com ou sem esse zero, e o cadastro pode ter qualquer um dos dois.
+function barcodeVariants(code) {
+  if (/^\d{12}$/.test(code)) return [code, `0${code}`];
+  if (/^0\d{12}$/.test(code)) return [code, code.slice(1)];
+  return [code];
+}
+
+async function findProductByBarcode(code) {
+  for (const variant of barcodeVariants(code)) {
+    const found = (await api.get(`/products?query=${encodeURIComponent(variant)}`)).find((p) => p.barcode === variant);
+    if (found) return found;
+  }
+  return null;
+}
+
+function loadZxing() {
+  zxingLoading ||= new Promise((resolve, reject) => {
+    document.head.appendChild(el('script', {
+      src: '/vendor/zxing/index.min.js',
+      onload: resolve,
+      onerror: () => { zxingLoading = null; reject(new Error('Não foi possível carregar o leitor de código de barras.')); },
+    }));
+  });
+  return zxingLoading;
+}
+
+// Devolve read(video) → código lido ou null. BarcodeDetector nativo onde existe
+// (Android, macOS, ChromeOS); Chrome e Edge no Windows não têm, e aí quem lê é o
+// @zxing/library (~360 KB), baixado só na primeira vez que a câmera abre.
+async function makeBarcodeReader() {
+  if ('BarcodeDetector' in window) {
+    const supported = await BarcodeDetector.getSupportedFormats();
+    const formats = SCAN_FORMATS.filter((f) => supported.includes(f));
+    if (formats.length) {
+      const detector = new BarcodeDetector({ formats });
+      return async (video) => (await detector.detect(video))[0]?.rawValue || null;
+    }
+  }
+  await loadZxing();
+  const { BarcodeFormat, DecodeHintType } = ZXing;
+  const reader = new ZXing.MultiFormatReader();
+  reader.setHints(new Map([
+    [DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.EAN_13, BarcodeFormat.EAN_8, BarcodeFormat.UPC_A, BarcodeFormat.UPC_E]],
+    [DecodeHintType.TRY_HARDER, true],
+  ]));
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  return async (video) => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+    try {
+      const bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(canvas)));
+      return reader.decodeWithState(bitmap).getText();
+    } catch {
+      return null; // nenhum código legível neste quadro
+    }
+  };
+}
+
+// Bipe agudo no acerto e grave no erro, sem arquivo de áudio.
+function beep(ok) {
+  if (!scanAudio) return;
+  const osc = scanAudio.createOscillator();
+  const gain = scanAudio.createGain();
+  osc.type = ok ? 'sine' : 'square';
+  osc.frequency.value = ok ? 1800 : 220;
+  gain.gain.value = 0.1;
+  osc.connect(gain).connect(scanAudio.destination);
+  osc.start();
+  osc.stop(scanAudio.currentTime + (ok ? 0.12 : 0.3));
+}
+
+// onCode(code) → { ok, message }. continuous: segue lendo depois de um acerto
+// (PDV); sem ele, fecha no primeiro acerto (Entrada de Estoque).
+async function openScanner({ onCode, continuous = false }) {
+  const backdrop = openModal('tpl-scanner');
+  const video = backdrop.querySelector('#scanner-video');
+  const view = backdrop.querySelector('.scanner-view');
+  const status = backdrop.querySelector('#scanner-status');
+  const say = (text, kind = '') => { status.textContent = text; status.className = `scanner-status ${kind}`; };
+  let stream = null;
+  let timer = null;
+  let closed = false;
+  const stopCamera = () => { if (stream) stream.getTracks().forEach((t) => t.stop()); };
+  backdrop._onClose = () => { closed = true; clearTimeout(timer); stopCamera(); };
+  backdrop.querySelector('#scanner-close').addEventListener('click', () => closeModal(backdrop));
+  // Criado no clique: depois de um gesto do usuário o navegador deixa tocar o bipe.
+  try { scanAudio ||= new AudioContext(); } catch { /* sem áudio: fica o aviso visual */ }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    say(window.isSecureContext
+      ? 'Este navegador não dá acesso à câmera. Use a busca ou um leitor USB.'
+      : 'A câmera só funciona com o sistema aberto em https:// ou em http://localhost. Use a busca ou um leitor USB.', 'bad');
+    return;
+  }
+  let read;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    if (closed) return stopCamera(); // fechou o modal enquanto a câmera abria
+    video.srcObject = stream;
+    await video.play();
+    read = await makeBarcodeReader();
+  } catch (err) {
+    stopCamera();
+    say(CAMERA_ERRORS[err.name] || err.message, 'bad');
+    return;
+  }
+  say('Aponte a câmera para o código de barras.');
+
+  let last = null;
+  let lastSeen = 0;
+  const tick = async () => {
+    if (closed) return;
+    try {
+      const code = video.readyState >= 2 ? await read(video) : null;
+      if (code && code === last && Date.now() - lastSeen < SCAN_REPEAT_MS) {
+        lastSeen = Date.now(); // o mesmo produto parado na frente da câmera conta uma vez só
+      } else if (code) {
+        last = code;
+        const result = await onCode(code);
+        lastSeen = Date.now();
+        if (closed) return;
+        beep(result.ok);
+        say(result.message, result.ok ? 'ok' : 'bad');
+        view.classList.remove('hit', 'miss');
+        view.classList.add(result.ok ? 'hit' : 'miss');
+        setTimeout(() => view.classList.remove('hit', 'miss'), 800);
+        if (result.ok && !continuous) {
+          timer = setTimeout(() => closeModal(backdrop), 600); // dá tempo de ver o ✔
+          return;
+        }
+      }
+    } catch (err) {
+      say(err.message, 'bad');
+    }
+    timer = setTimeout(tick, 100);
+  };
+  tick();
 }
 
 // ---------- Utils ----------

@@ -75,7 +75,10 @@
       <h2>Nova venda</h2>
       <div class="card op">
         <div class="sale-picker">
-          <input id="sale-search" class="field-xl" type="text" placeholder="Buscar produto por nome ou código de barras..." aria-label="Buscar produto para adicionar à venda" />
+          <div class="search-row">
+            <input id="sale-search" class="field-xl" type="text" placeholder="Buscar produto por nome ou código de barras..." aria-label="Buscar produto para adicionar à venda" />
+            <button type="button" id="sale-scan-btn" class="btn-xl scan-btn" aria-label="Ler código de barras pela câmera" title="Ler código de barras pela câmera">📷</button>
+          </div>
           <div id="sale-results" class="search-results"></div>
         </div>
         <div class="table-wrap"><table class="table">
@@ -199,7 +202,10 @@
         <form id="entry-form" class="card op">
           <h3>Entrada de mercadoria (compra)</h3>
           <label for="entry-product">Produto</label>
-          <select id="entry-product" class="field-xl" required></select>
+          <div class="search-row">
+            <select id="entry-product" class="field-xl" required></select>
+            <button type="button" id="entry-scan-btn" class="btn-xl scan-btn" aria-label="Ler código de barras pela câmera" title="Ler código de barras pela câmera">📷</button>
+          </div>
           <label for="entry-qty">Quantidade</label><input id="entry-qty" class="field-xl" type="number" step="0.001" min="0.001" required />
           <label for="entry-expiry">Data de validade do lote</label>
           <input id="entry-expiry" class="field-xl" type="date" required />
@@ -468,6 +474,18 @@
       </div>
       <p id="user-form-msg" class="error" hidden></p>
     </form>
+  </template>
+
+  <template id="tpl-scanner">
+    <div class="card op scanner-card">
+      <h3>Ler código de barras</h3>
+      <div class="scanner-view">
+        <video id="scanner-video" muted playsinline></video>
+        <div class="scanner-guide" aria-hidden="true"></div>
+      </div>
+      <p id="scanner-status" class="scanner-status" role="status" aria-live="polite">Abrindo a câmera…</p>
+      <button type="button" id="scanner-close" class="btn-xl btn-wide secondary">Fechar câmera</button>
+    </div>
   </template>
 
   <script src="/js/api.js"></script>

@@ -72,6 +72,8 @@ app.use('/api/shopping-list', shoppingListRoutes);
 app.use('/api/cash-sessions', cashSessionsRoutes);
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
+// Fallback do leitor de código de barras: a CSP só aceita scripts de 'self', então nada de CDN.
+app.use('/vendor/zxing', express.static(path.dirname(require.resolve('@zxing/library/umd/index.min.js'))));
 
 app.use((req, res) => res.status(404).json({ error: 'Não encontrado.' }));
 

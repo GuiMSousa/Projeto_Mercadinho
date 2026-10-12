@@ -213,6 +213,15 @@ button.small { padding: 6px 12px; font-size: 0.8125rem; margin: 0; box-shadow: n
   flex-shrink: 0;
 }
 .user-box button.secondary { margin-top: 0; }
+/* Nome longo não empurra o menu para uma segunda linha; o nome inteiro fica no title. */
+#user-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A partir de 1280px as 9 abas do admin, o indicador do caixa e o usuário cabem numa linha. */
+@media (min-width: 1280px) {
+  .topbar { gap: 14px; padding: 10px 20px; }
+  .tabs { gap: 2px; }
+  .tab-btn { padding: 8px 10px; }
+}
 
 .content { max-width: 1120px; margin: 0 auto; padding: 24px; }
 
@@ -524,3 +533,16 @@ textarea.field-xl { min-height: 100px; }
 .button-link.whatsapp { background: #128c7e; color: #fff; }
 .button-link.whatsapp:hover { background: #0e6f64; }
 #shop-text { font-family: inherit; }
+
+/* ---------- Leitor de código de barras ---------- */
+.search-row { display: flex; gap: 8px; align-items: stretch; }
+.search-row > input, .search-row > select { flex: 1; min-width: 0; }
+.scan-btn { flex: none; margin: 0; min-width: 60px; padding: 0 16px; font-size: 1.6rem; line-height: 1; }
+.scanner-view { position: relative; overflow: hidden; background: #000; border: 6px solid transparent; border-radius: var(--radius); transition: border-color 0.15s ease; }
+.scanner-view.hit { border-color: var(--ok); }
+.scanner-view.miss { border-color: var(--danger); }
+.scanner-view video { display: block; width: 100%; max-height: 55vh; object-fit: cover; }
+.scanner-guide { position: absolute; left: 8%; right: 8%; top: 50%; height: 3px; background: rgba(220, 38, 38, 0.85); box-shadow: 0 0 10px rgba(220, 38, 38, 0.9); }
+.scanner-status { margin: 14px 0 0; min-height: 1.5em; font-weight: 700; }
+.scanner-status.ok { color: var(--primary-hover); }
+.scanner-status.bad { color: var(--danger); }

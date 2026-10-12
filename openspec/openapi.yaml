@@ -247,7 +247,7 @@ paths:
       parameters:
         - name: query
           in: query
-          description: Trecho do nome (sem diferenciar maiúsculas).
+          description: Trecho do nome (sem diferenciar maiúsculas) ou o código de barras exato.
           schema:
             type: string
         - name: category

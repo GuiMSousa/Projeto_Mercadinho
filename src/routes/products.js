@@ -60,7 +60,8 @@ router.get('/', async (req, res) => {
   const urgency = parseEnumParam(req.query.urgency, URGENCY_LEVELS, 'urgency');
   const where = {};
   if (!(includeInactive === 'true' && req.user.role === 'ADMIN')) where.active = true;
-  if (query) where.name = { contains: String(query), mode: 'insensitive' };
+  // Leitor do balcão (câmera ou pistola USB) manda só os dígitos: casa o código exato.
+  if (query) where.OR = [{ name: { contains: String(query), mode: 'insensitive' } }, { barcode: String(query) }];
   if (category) where.category = String(category);
 
   const paginated = req.query.page !== undefined || req.query.pageSize !== undefined;
