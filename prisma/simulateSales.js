@@ -91,6 +91,7 @@ async function main() {
             quantity: qty.toFixed(3),
             unitPrice: unitPrice.toFixed(2),
             subtotal: subtotal.toFixed(2),
+            unitCost: Number(product.costPrice).toFixed(2),
           },
         });
         // Baixa pelos lotes (PVPS de venda), igual a uma venda feita pela tela; só a

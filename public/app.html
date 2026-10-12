@@ -455,25 +455,47 @@
 
   <template id="tpl-relatorios">
     <section>
-      <h2>Relatórios</h2>
+      <h2>Relatórios financeiros</h2>
       <div class="card">
-        <div class="filters">
-          <label for="rep-from">De</label><input id="rep-from" type="date" />
-          <label for="rep-to">Até</label><input id="rep-to" type="date" />
-          <button id="rep-apply-btn">Aplicar</button>
+        <div class="period-chips" role="group" aria-label="Período">
+          <button type="button" class="filter-chip" data-range="today" aria-pressed="false">Hoje</button>
+          <button type="button" class="filter-chip" data-range="7" aria-pressed="false">Últimos 7 dias</button>
+          <button type="button" class="filter-chip" data-range="30" aria-pressed="false">Últimos 30 dias</button>
+          <button type="button" class="filter-chip" data-range="month" aria-pressed="false">Este mês</button>
         </div>
+        <form id="rep-period" class="filters">
+          <div><label for="rep-start">De</label><input id="rep-start" type="date" required /></div>
+          <div><label for="rep-end">Até</label><input id="rep-end" type="date" required /></div>
+          <button type="submit">Aplicar</button>
+        </form>
+        <p id="rep-msg" class="error" hidden></p>
       </div>
+
+      <div class="grid-cards kpi-grid">
+        <div class="card stat"><span class="stat-label">Faturamento bruto</span><span id="kpi-revenue" class="stat-value">—</span><span id="kpi-revenue-sub" class="kpi-sub"></span></div>
+        <div class="card stat"><span class="stat-label">Lucro</span><span id="kpi-profit" class="stat-value">—</span><span id="kpi-profit-sub" class="kpi-sub"></span></div>
+        <div class="card stat" id="kpi-margin-card"><span class="stat-label">Margem de lucro</span><span id="kpi-margin" class="stat-value">—</span><span class="kpi-sub">verde acima de 20% · vermelho abaixo de 10%</span></div>
+        <div class="card stat"><span class="stat-label">Ticket médio</span><span id="kpi-ticket" class="stat-value">—</span><span id="kpi-ticket-sub" class="kpi-sub"></span></div>
+      </div>
+      <p id="rep-cost-warning" class="banner warn" hidden></p>
 
       <div class="grid-2">
         <div class="card">
-          <h3>Resumo de vendas</h3>
-          <p>Total: <strong id="rep-total">R$ 0,00</strong> (<span id="rep-count">0</span> vendas)</p>
-          <div class="table-wrap"><table class="table"><thead><tr><th>Dia</th><th>Total</th></tr></thead><tbody id="rep-by-day"></tbody></table></div>
+          <h3>Vendas por forma de pagamento</h3>
+          <div id="rep-methods" class="method-bars"></div>
         </div>
         <div class="card">
-          <h3>Mais vendidos</h3>
-          <div class="table-wrap"><table class="table"><thead><tr><th>Produto</th><th>Qtd vendida</th><th>Receita</th></tr></thead><tbody id="rep-top-products"></tbody></table></div>
+          <h3>Vendas por dia</h3>
+          <div class="table-wrap"><table class="table"><thead><tr><th>Dia</th><th>Total</th></tr></thead><tbody id="rep-by-day"></tbody></table></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h3>Produtos mais lucrativos</h3>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Produto</th><th>Qtd vendida</th><th>Faturamento</th><th>Custo</th><th>Lucro</th><th>Margem</th></tr></thead>
+          <tbody id="rep-top-products"></tbody>
+        </table></div>
       </div>
 
       <div class="card">

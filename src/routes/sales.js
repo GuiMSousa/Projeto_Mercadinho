@@ -104,6 +104,7 @@ router.post('/', validate(saleSchema), async (req, res) => {
         quantity: item.quantity.toFixed(3),
         unitPrice: unitPrice.toFixed(2),
         subtotal: subtotal.toFixed(2),
+        unitCost: product.costPrice.toFixed(2), // custo de agora: o CMV não muda se o custo mudar depois
       });
     }
     await tx.saleItem.createMany({ data: saleItems }); // um INSERT só, em vez de um por item

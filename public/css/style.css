@@ -550,7 +550,7 @@ textarea.field-xl { min-height: 100px; }
 .badge.semaforo.inactive { background: var(--surface-hover); color: var(--text-muted); }
 .urgency-reasons { display: block; margin-top: 4px; font-size: 0.8125rem; color: var(--text-muted); }
 
-.urgency-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.urgency-filter, .period-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .filter-chip {
   margin: 0;
   padding: 8px 16px;
@@ -596,3 +596,21 @@ textarea.field-xl { min-height: 100px; }
 .change-line.warn { color: var(--warn); }
 #cash-movements { margin-top: 16px; }
 #cash-close-summary { margin-top: 12px; }
+
+/* ---------- Painel financeiro (Relatórios) ---------- */
+.kpi-grid { margin-top: 16px; }
+.kpi-sub { display: block; margin-top: 4px; color: var(--text-muted); font-size: 0.8125rem; }
+/* Margem: acima de 20% verde, de 10% a 20% amarelo, abaixo de 10% vermelho. */
+#kpi-margin-card { border-left: 6px solid var(--border); }
+#kpi-margin-card.kpi-good { border-left-color: var(--ok); }
+#kpi-margin-card.kpi-good .stat-value, .margin-good { color: var(--ok); }
+#kpi-margin-card.kpi-warn { border-left-color: #eab308; }
+#kpi-margin-card.kpi-warn .stat-value, .margin-warn { color: var(--warn); }
+#kpi-margin-card.kpi-bad { border-left-color: var(--danger); }
+#kpi-margin-card.kpi-bad .stat-value, .margin-bad { color: var(--danger); }
+.margin-good, .margin-warn, .margin-bad { font-weight: 700; }
+.method-bars { display: grid; gap: 14px; }
+.method-bar-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-weight: 600; }
+.bar { height: 12px; margin-top: 6px; border-radius: var(--radius-pill); background: var(--surface-hover); overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--primary); border-radius: inherit; }
+.cost-missing { margin-left: 8px; }

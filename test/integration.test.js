@@ -876,3 +876,68 @@ test('caixa: sangria e suprimento entram no esperado, com motivo obrigatório', 
   assert.equal((await move(adminJar, { type: 'DEPOSIT', amount: 1, reason: 'Depois de fechar' })).status, 404);
   assert.equal((await openCash(adminJar, 0)).status, 201);
 });
+
+test('financeiro: faturamento, CMV, lucro, margem, ticket médio, formas de pagamento e top produtos', async () => {
+  const a = await newProduct('Produto Financeiro A', { costPrice: 4, salePrice: 10, initialStock: 20 });
+  const b = await newProduct('Produto Financeiro B', { costPrice: 0, salePrice: 5, initialStock: 20 }); // custo não informado
+  const c = await newProduct('Produto Financeiro C', { unit: 'KG', costPrice: 30, salePrice: 39.9, initialStock: 20 });
+  const sales = [
+    await sell(adminJar, a.id, 3, 'CASH'), // R$ 30,00, custo 12,00
+    await sell(adminJar, b.id, 2, 'PIX'), // R$ 10,00, custo 0
+    await sell(adminJar, c.id, 0.5, 'DEBIT_CARD'), // R$ 19,95, custo 15,00
+    await sell(adminJar, a.id, 1, 'CASH'), // cancelada: fica de fora
+  ];
+  assert.ok(sales.every((r) => r.status === 201));
+  await request(baseUrl, adminJar, `/api/sales/${sales[3].body.id}/cancel`, { method: 'POST' });
+  // Num dia só deles, longe das vendas dos outros testes (feitas hoje).
+  await prisma.sale.updateMany({ where: { id: { in: sales.map((r) => r.body.id) } }, data: { createdAt: new Date(2020, 0, 15, 12) } });
+  // O custo muda depois da venda: o CMV continua com o custo gravado na venda.
+  await prisma.product.update({ where: { id: a.id }, data: { costPrice: '9.00' } });
+
+  const res = await request(baseUrl, adminJar, '/api/reports/financial?startDate=2020-01-15&endDate=2020-01-15');
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const r = res.body;
+  assert.deepEqual(r.period, { startDate: '2020-01-15', endDate: '2020-01-15' });
+  assert.deepEqual(
+    [r.grossRevenue, r.costOfGoodsSold, r.profit, r.profitMargin, r.salesCount, r.averageTicket],
+    [59.95, 27, 32.95, 54.96, 3, 19.98], // 32,95 / 59,95 = 54,96%; 59,95 / 3 = 19,98
+  );
+  assert.deepEqual(r.byPaymentMethod, [
+    { method: 'CASH', salesCount: 1, total: 30, percentage: 50.04 },
+    { method: 'PIX', salesCount: 1, total: 10, percentage: 16.68 },
+    { method: 'DEBIT_CARD', salesCount: 1, total: 19.95, percentage: 33.28 },
+    { method: 'CREDIT_CARD', salesCount: 0, total: 0, percentage: 0 },
+  ]);
+  assert.deepEqual(r.topProducts.map((p) => [p.name, p.quantity, p.revenue, p.cost, p.profit, p.margin, p.costMissing]), [
+    ['Produto Financeiro A', 3, 30, 12, 18, 60, false],
+    ['Produto Financeiro B', 2, 10, 0, 10, 100, true],
+    ['Produto Financeiro C', 0.5, 19.95, 15, 4.95, 24.81, false],
+  ]);
+  assert.equal(r.productsWithoutCost, 1);
+
+  const empty = (await request(baseUrl, adminJar, '/api/reports/financial?startDate=2019-01-01&endDate=2019-01-31')).body;
+  assert.deepEqual(
+    [empty.grossRevenue, empty.costOfGoodsSold, empty.profit, empty.profitMargin, empty.salesCount, empty.averageTicket, empty.topProducts.length],
+    [0, 0, 0, null, 0, null, 0],
+    'sem vendas: margem e ticket médio null, sem divisão por zero',
+  );
+  assert.ok(empty.byPaymentMethod.every((m) => m.total === 0 && m.percentage === null));
+
+  const month = (await request(baseUrl, adminJar, '/api/reports/financial')).body.period;
+  const now = new Date();
+  assert.equal(month.startDate, `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`, 'padrão: do dia 1º do mês até hoje');
+
+  const bad = async (qs) => (await request(baseUrl, adminJar, `/api/reports/financial?${qs}`)).status;
+  assert.equal(await bad('startDate=2026-02-30'), 400, 'data que não existe');
+  assert.equal(await bad('startDate=lixo'), 400);
+  assert.equal(await bad('startDate=2020-02-01&endDate=2020-01-01'), 400, 'início depois do fim');
+  assert.equal((await request(baseUrl, await cashierJar(), '/api/reports/financial')).status, 403, 'custo e margem são só do administrador');
+});
+
+test('relatórios: o resumo por dia usa o fuso da loja (venda das 22h fica no próprio dia)', async () => {
+  const product = await newProduct('Produto Noite', { initialStock: 5, salePrice: 7 });
+  const sale = await sell(adminJar, product.id, 1);
+  await prisma.sale.update({ where: { id: sale.body.id }, data: { createdAt: new Date(2020, 2, 10, 22, 30) } });
+  const res = await request(baseUrl, adminJar, `/api/reports/sales-summary?from=${encodeURIComponent(new Date(2020, 2, 10).toISOString())}&to=${encodeURIComponent(new Date(2020, 2, 11).toISOString())}`);
+  assert.deepEqual(res.body.byDay, { '2020-03-10': 7 });
+});

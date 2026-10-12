@@ -1,4 +1,5 @@
 const httpError = require('./httpError');
+const { dateOnly } = require('./calendar');
 
 // Query strings chegam sempre como texto solto e nunca passam pelo Zod (que só
 // valida req.body). Sem esta validação, um "from=lixo" ou "type=lixo" vira um
@@ -13,6 +14,15 @@ function parseDateParam(value, fieldName) {
     throw httpError(400, `Parâmetro "${fieldName}" inválido: use uma data válida (ex: 2026-08-26).`);
   }
   return date;
+}
+
+// Dia "AAAA-MM-DD" de um filtro de período, como meia-noite no fuso da loja (TZ).
+function parseDayParam(value, fieldName) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = dateOnly.safeParse(String(value));
+  if (!parsed.success) throw httpError(400, `Parâmetro "${fieldName}" inválido: ${parsed.error.issues[0].message}`);
+  const [year, month, day] = parsed.data.split('-').map(Number);
+  return new Date(year, month - 1, day);
 }
 
 function parseEnumParam(value, allowed, fieldName) {
@@ -34,4 +44,4 @@ function clampIntParam(value, { min, max, fallback }) {
   return parsed;
 }
 
-module.exports = { parseDateParam, parseEnumParam, clampIntParam };
+module.exports = { parseDateParam, parseDayParam, parseEnumParam, clampIntParam };

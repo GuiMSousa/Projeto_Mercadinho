@@ -181,6 +181,8 @@ model SaleItem {
   quantity  Decimal @db.Decimal(12, 3)
   unitPrice Decimal @db.Decimal(12, 2)
   subtotal  Decimal @db.Decimal(12, 2)
+  // Custo do produto no momento da venda (CMV do painel financeiro).
+  unitCost  Decimal @db.Decimal(12, 2)
 
   @@index([saleId])
   @@index([productId])

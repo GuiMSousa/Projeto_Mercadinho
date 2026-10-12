@@ -1449,43 +1449,114 @@ async function commitImport() {
 }
 
 // ---------- Relatórios ----------
+// Painel financeiro. Os atalhos preenchem as datas; "Aplicar" vale para datas livres.
+const PERIOD_RANGES = {
+  today: (d) => [d, d],
+  7: (d) => [addDays(d, -6), d],
+  30: (d) => [addDays(d, -29), d],
+  month: (d) => [new Date(d.getFullYear(), d.getMonth(), 1), d],
+};
+
 async function renderRelatorios() {
   activeTemplate('relatorios');
-  document.getElementById('rep-apply-btn').addEventListener('click', loadReports);
-  await loadReports();
+  const chips = document.querySelector('.period-chips');
+  const pickRange = (range) => {
+    const today = new Date();
+    const [from, to] = PERIOD_RANGES[range](new Date(today.getFullYear(), today.getMonth(), today.getDate()));
+    document.getElementById('rep-start').value = localDateISO(from);
+    document.getElementById('rep-end').value = localDateISO(to);
+    chips.querySelectorAll('[data-range]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.range === range)));
+    loadReports();
+  };
+  chips.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-range]');
+    if (btn) pickRange(btn.dataset.range);
+  });
+  document.getElementById('rep-period').addEventListener('submit', (e) => {
+    e.preventDefault();
+    chips.querySelectorAll('[data-range]').forEach((b) => b.setAttribute('aria-pressed', 'false'));
+    loadReports();
+  });
+  pickRange('month');
 }
 
+const formatPercent = (value) => (value === null ? '—' : `${value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`);
+// Faixas da margem pedidas pelo dono: acima de 20% verde, de 10% a 20% amarelo, abaixo de 10% vermelho.
+const marginLevel = (margin) => (margin === null ? '' : margin > 20 ? 'good' : margin >= 10 ? 'warn' : 'bad');
+
 async function loadReports() {
-  const from = document.getElementById('rep-from').value;
-  const to = document.getElementById('rep-to').value;
-  const qs = new URLSearchParams();
-  if (from) qs.set('from', from);
-  if (to) qs.set('to', to);
+  const startDate = document.getElementById('rep-start').value;
+  const endDate = document.getElementById('rep-end').value;
+  const msg = document.getElementById('rep-msg');
+  msg.hidden = true;
+  if (!startDate || !endDate || startDate > endDate) {
+    msg.textContent = 'Escolha o período: a data inicial não pode ser depois da final.';
+    msg.hidden = false;
+    return;
+  }
+  // O resumo por dia recebe instantes: do início do primeiro dia ao fim do último, no horário local.
+  const [y1, m1, d1] = startDate.split('-').map(Number);
+  const [y2, m2, d2] = endDate.split('-').map(Number);
+  const daily = new URLSearchParams({ from: new Date(y1, m1 - 1, d1).toISOString(), to: new Date(y2, m2 - 1, d2, 23, 59, 59, 999).toISOString() });
 
   const seq = viewSeq;
-  const [summary, topProducts, slowMoving] = await Promise.all([
-    api.get(`/reports/sales-summary?${qs.toString()}`),
-    api.get(`/reports/top-products?${qs.toString()}`),
+  const [report, summary, slowMoving] = await Promise.all([
+    api.get(`/reports/financial?${new URLSearchParams({ startDate, endDate })}`),
+    api.get(`/reports/sales-summary?${daily}`),
     api.get('/reports/slow-moving'),
   ]);
   if (seq !== viewSeq) return; // trocou de tela enquanto a API respondia
 
-  document.getElementById('rep-total').textContent = formatMoney(summary.total);
-  document.getElementById('rep-count').textContent = String(summary.count);
+  const setText = (id, text) => { document.getElementById(id).textContent = text; };
+  setText('kpi-revenue', formatMoney(report.grossRevenue));
+  setText('kpi-revenue-sub', `${formatDate(`${report.period.startDate}T00:00:00Z`)} a ${formatDate(`${report.period.endDate}T00:00:00Z`)}`);
+  setText('kpi-profit', formatMoney(report.profit));
+  setText('kpi-profit-sub', `custo das mercadorias ${formatMoney(report.costOfGoodsSold)}`);
+  setText('kpi-margin', formatPercent(report.profitMargin));
+  setText('kpi-ticket', report.averageTicket === null ? '—' : formatMoney(report.averageTicket));
+  setText('kpi-ticket-sub', `${report.salesCount} venda(s)`);
+  const marginCard = document.getElementById('kpi-margin-card');
+  marginCard.classList.remove('kpi-good', 'kpi-warn', 'kpi-bad');
+  if (marginLevel(report.profitMargin)) marginCard.classList.add(`kpi-${marginLevel(report.profitMargin)}`);
+
+  const warning = document.getElementById('rep-cost-warning');
+  warning.textContent = `⚠ ${report.productsWithoutCost} produto(s) vendido(s) sem preço de custo no período: o lucro e a margem aparecem maiores do que são. Cadastre o custo em Produtos.`;
+  warning.hidden = report.productsWithoutCost === 0;
+
+  const methods = document.getElementById('rep-methods');
+  methods.innerHTML = '';
+  report.byPaymentMethod.forEach((m) => {
+    const fill = el('span');
+    fill.style.width = `${m.percentage ?? 0}%`; // CSSOM: a CSP não aceita style="..." no HTML
+    methods.appendChild(el('div', { class: 'method-bar' }, [
+      el('div', { class: 'method-bar-head' }, [
+        el('span', {}, PAYMENT_LABELS[m.method] || m.method),
+        el('span', {}, `${formatMoney(m.total)} · ${formatPercent(m.percentage)}`),
+      ]),
+      el('div', { class: 'bar', 'aria-hidden': 'true' }, fill),
+    ]));
+  });
 
   const byDayBody = document.getElementById('rep-by-day');
   byDayBody.innerHTML = '';
   Object.entries(summary.byDay).sort().reverse().forEach(([day, total]) => {
-    byDayBody.appendChild(el('tr', {}, [el('td', {}, day), el('td', {}, formatMoney(total))]));
+    byDayBody.appendChild(el('tr', {}, [el('td', {}, formatDate(`${day}T00:00:00Z`)), el('td', {}, formatMoney(total))]));
   });
   if (Object.keys(summary.byDay).length === 0) byDayBody.appendChild(el('tr', {}, el('td', { colspan: '2', class: 'muted' }, 'Sem vendas no período.')));
 
   const topBody = document.getElementById('rep-top-products');
   topBody.innerHTML = '';
-  topProducts.forEach((p) => {
-    topBody.appendChild(el('tr', {}, [el('td', {}, p.name), el('td', {}, String(p.quantitySold)), el('td', {}, formatMoney(p.revenue))]));
+  report.topProducts.forEach((p) => {
+    topBody.appendChild(el('tr', {}, [
+      el('td', {}, [p.name, p.costMissing ? el('span', { class: 'badge warn cost-missing', title: 'Sem preço de custo no cadastro: o custo conta como R$ 0,00.' }, 'custo não informado') : null]),
+      el('td', {}, `${formatQuantity(p.quantity)} ${p.unit}`),
+      el('td', {}, formatMoney(p.revenue)),
+      el('td', {}, formatMoney(p.cost)),
+      el('td', {}, formatMoney(p.profit)),
+      el('td', {}, el('span', { class: `margin-${marginLevel(p.margin) || 'none'}` }, formatPercent(p.margin))),
+    ]));
   });
-  if (topProducts.length === 0) topBody.appendChild(el('tr', {}, el('td', { colspan: '3', class: 'muted' }, 'Sem vendas no período.')));
+  if (report.topProducts.length === 0) topBody.appendChild(el('tr', {}, el('td', { colspan: '6', class: 'muted' }, 'Sem vendas no período.')));
 
   const slowBody = document.getElementById('rep-slow-moving');
   slowBody.innerHTML = '';
@@ -1772,10 +1843,11 @@ async function openScanner({ onCode, continuous = false }) {
 
 // ---------- Utils ----------
 // Hoje no calendário local, no formato AAAA-MM-DD do <input type="date">.
-function localDateISO() {
-  const d = new Date();
+function localDateISO(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+const addDays = (date, days) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 
 function debounce(fn, ms) {
   let timer = null;

@@ -706,6 +706,43 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/reports/financial:
+    get:
+      tags: [Reports]
+      operationId: getFinancialReport
+      summary: Painel financeiro do período (somente ADMIN)
+      description: >-
+        Vendas não canceladas entre `startDate` e `endDate` (dias no fuso da loja, ambos
+        inclusive; padrão: do dia 1º do mês até hoje). CMV = quantidade × custo unitário
+        gravado em cada item no momento da venda; lucro = faturamento − CMV; margem =
+        lucro ÷ faturamento × 100. Sem vendas, `profitMargin` e `averageTicket` vêm `null`.
+      parameters:
+        - name: startDate
+          in: query
+          description: Primeiro dia do período (AAAA-MM-DD).
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          description: Último dia do período (AAAA-MM-DD), inclusive.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Indicadores do período.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinancialReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/reports/sales-summary:
     get:
       tags: [Reports]
@@ -716,7 +753,7 @@ paths:
         - $ref: '#/components/parameters/To'
       responses:
         '200':
-          description: Total, quantidade e total por dia (UTC).
+          description: Total, quantidade e total por dia (no fuso da loja, `TZ`).
           content:
             application/json:
               schema:
@@ -2019,6 +2056,84 @@ components:
           items:
             $ref: '#/components/schemas/SlowMovingProduct'
 
+    FinancialReport:
+      type: object
+      required: [period, grossRevenue, costOfGoodsSold, profit, profitMargin, salesCount, averageTicket, byPaymentMethod, topProducts, productsWithoutCost]
+      properties:
+        period:
+          type: object
+          required: [startDate, endDate]
+          properties:
+            startDate:
+              type: string
+              format: date
+            endDate:
+              type: string
+              format: date
+        grossRevenue:
+          type: number
+          description: Faturamento bruto (soma dos totais das vendas).
+        costOfGoodsSold:
+          type: number
+          description: CMV (quantidade × custo unitário gravado na venda).
+        profit:
+          type: number
+          description: Faturamento − CMV.
+        profitMargin:
+          type: [number, 'null']
+          description: Lucro ÷ faturamento × 100, com duas casas; null sem vendas.
+        salesCount:
+          type: integer
+        averageTicket:
+          type: [number, 'null']
+          description: Faturamento ÷ vendas; null sem vendas.
+        byPaymentMethod:
+          type: array
+          items:
+            type: object
+            required: [method, salesCount, total, percentage]
+            properties:
+              method:
+                type: string
+                enum: [CASH, PIX, DEBIT_CARD, CREDIT_CARD]
+              salesCount:
+                type: integer
+              total:
+                type: number
+              percentage:
+                type: [number, 'null']
+                description: Parte do faturamento, em %; null sem vendas.
+        topProducts:
+          type: array
+          description: Os 10 produtos de maior lucro no período.
+          items:
+            type: object
+            required: [productId, name, unit, quantity, revenue, cost, profit, margin, costMissing]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              name:
+                type: string
+              unit:
+                type: string
+              quantity:
+                type: number
+              revenue:
+                type: number
+              cost:
+                type: number
+              profit:
+                type: number
+              margin:
+                type: [number, 'null']
+              costMissing:
+                type: boolean
+                description: Vendido com custo zero (não informado no cadastro); margem conta 100%.
+        productsWithoutCost:
+          type: integer
+          description: Produtos vendidos no período com custo não informado.
+
     SalesSummary:
       type: object
       required: [total, count, byDay]
@@ -2029,7 +2144,7 @@ components:
           type: integer
         byDay:
           type: object
-          description: Total vendido por dia (`AAAA-MM-DD`, UTC).
+          description: Total vendido por dia (`AAAA-MM-DD`, no fuso da loja).
           additionalProperties:
             type: number
 
